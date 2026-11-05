@@ -87,10 +87,10 @@ Android KMP library、Compose Multiplatform、Compose compiler 插件，不使�
 
 坐标由本目录 `gradle.properties` 的 `cpf.group`、`cpf.version` 提供，默认值为：
 
-- core KMP 根坐标：`com.lihb.forks.worker:worker-kmp:4.0.8-cpf.3-android.6`。
-- core JVM 坐标：`com.lihb.forks.worker:worker-kmp-jvm:4.0.8-cpf.3-android.6`。
-- Android KMP 根坐标：`com.lihb.forks.worker:worker-android:4.0.8-cpf.3-android.6`。
-- Android 目标叶坐标：`com.lihb.forks.worker:worker-android-android:4.0.8-cpf.3-android.6`。
+- core KMP 根坐标：`com.lihb.forks.worker:worker-kmp:4.0.8-cpf.3-android.7`。
+- core JVM 坐标：`com.lihb.forks.worker:worker-kmp-jvm:4.0.8-cpf.3-android.7`。
+- Android KMP 根坐标：`com.lihb.forks.worker:worker-android:4.0.8-cpf.3-android.7`。
+- Android 目标叶坐标：`com.lihb.forks.worker:worker-android-android:4.0.8-cpf.3-android.7`。
 - 文件仓库：`cpf-build/build/repository`，发布仓库名称为 `Cpf`。
 
 Android 坐标按 KMP 的 `kotlinMultiplatform` / `android` publication 分别设置，
@@ -526,3 +526,21 @@ Core16 与 Android119 合计135项报告，134项运行通过、1项沿用上游
 
 `.3-android.6` 四坐标同版本地发布 exit 0（2秒，44tasks中25executed、19UP-TO-DATE），16新制品、104个唯一旧制品摘要保持；生产core Jar/sources无测试fake，变更Android manager与core请求KDoc的发布源码字节匹配。
 独立AGP9.1/Gradle9.5 consumer从新根GAV元数据检查、Kotlin编译、APK组装exit0（11秒，36tasks中5executed、31UP-TO-DATE），compile/runtime闭包同版，无project/composite/mavenLocal/directAAR绕过。沿用既有编译探针，无新增运行入口。低SDK行为依据C3b2真实WM的17项新用例，消费APK未安装运行；App未切换，实际设备前台服务、Native/iOS仍待验。
+
+## D0b 默认失败结果的空输出
+
+`KmpAndroidWorker` 将输出为空且 message 为空的默认 `WorkResult.Failure()` 映射为
+原生 `Data.EMPTY`，不再产生值为空字符串的 `error` 字段。非空输出继续原样转换，
+业务 `error` 字段不会被 message 覆盖；仅输出为空而 message 非空时保留旧 `error` 映射。
+
+新增用例复用真实 `TestListenableWorkerBuilder` / `KmpAndroidWorker`，断言默认失败的
+原生输出等于 `Data.EMPTY` 且键值表为空；非空 payload 与旧 message 用例及断言保持。
+本批不新增公开 API 或 ABI，core 结果模型与 App SDK、依赖、运行路径保持。
+
+默认四坐标预留为 `4.0.8-cpf.3-android.7`，尚未发布。编译、定向回归、旧制品摘要
+与 App Tier 1 已完成，真实记录见下文；不据此宣称设备或 Native/iOS 验收。
+
+### D0b 实际门禁
+
+Core16项有效缓存报告、Android120项报告（含新增默认Failure为空）共136项，零失败/错误，1项沿用上游contentUriTrigger忽略。Android相关回归本次实际执行，Core runtime为UP-TO-DATE，生产与完整测试源码编译通过；门禁exit0（44秒，26tasks中10executed、16UP-TO-DATE）。payload优先/用户error保留与非空legacy message既有断言不变，未引入哨兵metadata或Facade重复映射。
+120个唯一旧制品摘要保持，App Tier1 exit0（5秒，32tasks中3executed、29UP-TO-DATE）。新`.3-android.7`尚未发布，App SDK/业务未切换，Native/iOS及设备服务未据此通过。

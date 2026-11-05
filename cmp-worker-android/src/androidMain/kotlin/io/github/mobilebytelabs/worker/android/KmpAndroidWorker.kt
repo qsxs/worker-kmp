@@ -2,7 +2,9 @@ package io.github.mobilebytelabs.worker.android
 
 import android.content.Context
 import androidx.work.CoroutineWorker
+import androidx.work.Data
 import androidx.work.WorkerParameters
+import androidx.work.workDataOf
 import io.github.mobilebytelabs.worker.ExperimentalForegroundApi
 import io.github.mobilebytelabs.worker.ForegroundNotSupportedException
 import io.github.mobilebytelabs.worker.ForegroundWorker
@@ -63,10 +65,10 @@ class KmpAndroidWorker internal constructor(
                 is WorkResult.Success -> Result.success(result.outputData.toAndroid())
 
                 is WorkResult.Failure -> Result.failure(
-                    if (result.outputData.keyValueMap().isEmpty()) {
-                        androidx.work.workDataOf("error" to result.message)
-                    } else {
-                        result.outputData.toAndroid()
+                    when {
+                        result.outputData.keyValueMap().isNotEmpty() -> result.outputData.toAndroid()
+                        result.message.isNotEmpty() -> workDataOf("error" to result.message)
+                        else -> Data.EMPTY
                     },
                 )
 

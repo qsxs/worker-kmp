@@ -233,6 +233,17 @@ class KmpAndroidWorkerTest {
     }
 
     @Test
+    fun doWork_defaultFailureHasEmptyNativeOutputData() = runTest {
+        val worker = testWorker { WorkResult.Failure() }
+
+        val result = assertIs<ListenableWorker.Result.Failure>(worker.doWork())
+
+        assertEquals(Data.EMPTY, result.outputData)
+        assertTrue(result.outputData.keyValueMap.isEmpty())
+        assertTrue(activeBridgeWorkers().isEmpty())
+    }
+
+    @Test
     fun doWork_passesNativeRunAttemptCountToActualFactoryContext() = runTest {
         listOf(0, 3).forEach { attempt ->
             var factoryContext: WorkerContext? = null
