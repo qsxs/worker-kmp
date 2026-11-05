@@ -12,8 +12,8 @@ import io.github.mobilebytelabs.worker.ExistingWorkPolicy
 import io.github.mobilebytelabs.worker.WorkInfo
 import io.github.mobilebytelabs.worker.WorkManager
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import java.util.UUID
 import java.util.concurrent.TimeUnit
 import kotlin.uuid.Uuid
 import androidx.work.WorkManager as AndroidWM
@@ -55,7 +55,7 @@ class AndroidWorkManager(context: Context) : WorkManager {
     }
 
     override suspend fun cancelWorkById(id: Uuid) {
-        wm.cancelAllWorkByTag(id.toTag()).result.await()
+        wm.cancelWorkById(UUID.fromString(id.toString())).result.await()
     }
 
     override suspend fun cancelAllWorkByTag(tag: String) {
@@ -63,21 +63,22 @@ class AndroidWorkManager(context: Context) : WorkManager {
     }
 
     override fun getWorkInfosByTag(tag: String): Flow<List<WorkInfo>> =
-        wm.getWorkInfosByTagFlow(tag).map { list -> list.mapNotNull { it.toKmp() } }
+        wm.getWorkInfosByTagFlow(tag).map { list -> list.map { it.toKmp() } }
 
     // worker-kmp-single-api-completion sub-plan 01 — delegates to androidx.work native API.
     override fun getWorkInfosForUniqueWorkFlow(uniqueWorkName: String): Flow<List<WorkInfo>> =
         wm.getWorkInfosForUniqueWorkFlow(uniqueWorkName)
-            .map { list -> list.mapNotNull { it.toKmp() } }
+            .map { list -> list.map { it.toKmp() } }
 
     override suspend fun getWorkInfoById(id: Uuid): WorkInfo? =
-        wm.getWorkInfosByTagFlow(id.toTag()).first().firstOrNull()?.toKmp()
+        wm.getWorkInfoById(UUID.fromString(id.toString())).await()?.toKmp()
 
     // ── Private builders ──────────────────────────────────────────────────────
 
     private fun io.github.mobilebytelabs.worker.OneTimeWorkRequest.toAndroidOneTime(): OneTimeWorkRequest {
         val data = buildInputData(workerClass, id, inputData)
         val builder = OneTimeWorkRequestBuilder<KmpAndroidWorker>()
+            .setId(UUID.fromString(id.toString()))
             .setInputData(data)
             .setConstraints(constraints.toAndroid())
             .setBackoffCriteria(
@@ -108,6 +109,7 @@ class AndroidWorkManager(context: Context) : WorkManager {
         val intervalMs = repeatInterval.inWholeMilliseconds
             .coerceAtLeast(PeriodicWorkRequest.MIN_PERIODIC_INTERVAL_MILLIS)
         val builder = PeriodicWorkRequestBuilder<KmpAndroidWorker>(intervalMs, TimeUnit.MILLISECONDS)
+            .setId(UUID.fromString(id.toString()))
             .setInputData(data)
             .setConstraints(constraints.toAndroid())
             .addTag(id.toTag())

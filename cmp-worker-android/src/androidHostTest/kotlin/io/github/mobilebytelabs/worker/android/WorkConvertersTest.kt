@@ -3,6 +3,7 @@ package io.github.mobilebytelabs.worker.android
 import io.github.mobilebytelabs.worker.Constraints
 import io.github.mobilebytelabs.worker.WorkData
 import io.github.mobilebytelabs.worker.workDataOf
+import java.util.UUID
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -29,6 +30,34 @@ class WorkConvertersTest {
     @Test
     fun extractKmpId_returnsNullWhenNoKmpTag() {
         assertNull(setOf("user-tag", "another-tag").extractKmpId())
+    }
+
+    @Test
+    fun workInfoToKmp_usesNativeIdWhenMetadataTagDisagrees() {
+        val nativeId = UUID.randomUUID()
+        val requestedId = Uuid.random()
+        val nativeInfo = androidx.work.WorkInfo(
+            id = nativeId,
+            state = androidx.work.WorkInfo.State.ENQUEUED,
+            tags = setOf(requestedId.toTag(), "updated"),
+        )
+        val converted = nativeInfo.toKmp()
+        assertEquals(Uuid.parse(nativeId.toString()), converted.id)
+        assertEquals(setOf("updated"), converted.tags)
+    }
+
+    @Test
+    fun workInfoToKmp_doesNotDropNativeRecordWithoutKmpTag() {
+        val nativeId = UUID.randomUUID()
+        val nativeInfo = androidx.work.WorkInfo(
+            id = nativeId,
+            state = androidx.work.WorkInfo.State.CANCELLED,
+            tags = setOf("legacy-backup"),
+        )
+        val converted = nativeInfo.toKmp()
+        assertEquals(Uuid.parse(nativeId.toString()), converted.id)
+        assertEquals(io.github.mobilebytelabs.worker.WorkInfo.State.CANCELLED, converted.state)
+        assertEquals(setOf("legacy-backup"), converted.tags)
     }
 
     @Test

@@ -24,19 +24,18 @@ class KmpAndroidWorker(appContext: Context, params: WorkerParameters) : Coroutin
     override suspend fun doWork(): Result {
         val workerClass = inputData.getString(KEY_KMP_CLASS)
             ?: return Result.failure()
-        val kmpId = inputData.getString(KEY_KMP_ID)?.let {
-            runCatching { Uuid.parse(it) }.getOrNull()
-        } ?: return Result.failure()
+        // UPDATE 会替换输入与标签，执行身份始终来自 WorkManager 保留的原生 ID。
+        val nativeId = Uuid.parse(id.toString())
 
         val factory = KmpWorkerFactory.instance
             ?: return Result.failure()
 
         val userInputData = inputData.toKmp()
         val userTags = tags.userTags()
-        val context = AndroidWorkerContext(this, kmpId, userInputData, userTags)
+        val context = AndroidWorkerContext(this, nativeId, userInputData, userTags)
         val worker = factory.create(workerClass, context)
 
-        AndroidForegroundBridge.register(kmpId, this)
+        AndroidForegroundBridge.register(nativeId, this)
         return try {
             when (val result = worker.doWork()) {
                 is WorkResult.Success -> Result.success(result.outputData.toAndroid())
@@ -48,7 +47,7 @@ class KmpAndroidWorker(appContext: Context, params: WorkerParameters) : Coroutin
                 is WorkResult.Retry -> Result.retry()
             }
         } finally {
-            AndroidForegroundBridge.unregister(kmpId)
+            AndroidForegroundBridge.unregister(nativeId)
         }
     }
 }

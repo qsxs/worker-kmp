@@ -300,3 +300,37 @@ Host / Robolectric 结果不能作为真实设备后台调度、进程生命周�
 
 任务发现 exit 0（7 秒）；`:android:compileAndroidMain :android:compileAndroidHostTest :android:testAndroidHostTest --tests "io.github.mobilebytelabs.worker.android.WorkConvertersTest"` exit 0（48 秒，24 tasks 中 17 executed、7 UP-TO-DATE）。全部 11 个原 host 测试文件参加编译；定向类报告 9 项，8 项运行通过、1 项沿用上游 @Ignore 的 contentUriTrigger 用例，零失败/错误，不表示整个 host 测试集已运行。
 根 App `aiVerifyTier1` exit 0（7 秒，30 tasks 中 2 executed、28 UP-TO-DATE）。`.1` 的 8 个及 `.2` 的 16 个已验收制品 SHA-256 全部保持，未执行发布。Native、真实设备后台/前台行为均不在本次验收范围。
+
+## C1 Android 原生 UUID 身份
+
+单次和周期请求 builder 均将 KMP request UUID 写入 Android WorkRequest 的原生 ID。
+执行中的 WorkerContext 与 AndroidForegroundBridge 注册键来自原生 Worker.id；
+输入内的 `kmp_worker_id` 和 `kmp_id:` 标签只保留为兼容元数据，不再决定身份。
+因此周期 A 经 UPDATE B、再 UPDATE C 后，输入和标签可以变为 B/C，执行、查询与取消仍使用 A。
+按 ID 查询和取消直接委托 WorkManager 的原生公开 API，不用标签反查或维护映射表。
+所有原生 WorkInfo 都按原生 ID 转换；没有 KMP 标签和输入的旧 BackupWorker 记录也保留可见。
+
+四个限定 host 测试文件补充官方 WorkManagerTestInitHelper 的内存 WorkDatabase 与原 TestDriver 用例：
+新单次/周期请求的 request/native Worker/context UUID 一致，周期连续两次 UPDATE 的真实执行与取消，
+单次和周期 KEEP 不插入 B，以及无 KMP 元数据的旧原生任务按 tag、unique name、ID 查询和取消。
+夹具通过原生 WorkerFactory 观察真实 Worker 和执行上下文，只记录执行结果，不替代数据库或调度器。
+原集成用例的“只要非 FAILED 即接受”改为确切 SUCCEEDED 和输出断言；
+原 factory 默认值用例允许静态实例被前序测试污染且未断言实例，改为真实执行期间安装及 bridge 清理断言。
+原 tag 解析辅助用例保留为兼容元数据测试；新增 native ID 与标签冲突、缺少标签时的转换断言。
+上游 contentUriTrigger 的既有忽略标记保持。
+
+上游公开 enqueue 方法仍返回传入 request.id；KEEP 未插入新请求、UPDATE 保留旧 ID 时，
+此返回值不能证明该 UUID 对应新增记录。这一既有返回契约缺口本批仅记录；
+后续 facade Operation 不暴露假插入 ID，也不通过入队前后查询猜测竞争胜者。
+本批不增加持久映射、清库、重排任务或额外初始化守卫，不修改 App、SDK、第三方依赖或已验收制品；仅预留新的 fork 私有发布版本。
+
+限定四类 host 测试、完整生产与 host 编译及根 App Tier 1 已完成，真实结果见下文；
+未执行发布、设备或系统后台/前台验收。
+
+C1 同时将默认私有版本预留为 `4.0.8-cpf.3-android.1`，防止变更后的生产源码通过默认发布命令覆盖已验收 `.2`。本批尚未发布新制品，隔离消费探针默认读取同一私有版本属性，须先发布新制品再验证消费；App 尚未消费该 fork，现有 SDK 与依赖保持。实际发布和同版消费另批验证。iOS opt-in 的 preview 版本逻辑保持。
+
+### C1 实际门禁（2026-11-05）
+
+`:android:compileAndroidMain :android:compileAndroidHostTest :android:testAndroidHostTest` 加四个完整类过滤（AndroidWorkManagerTest、AndroidWorkManagerIntegrationTest、WorkConvertersTest、KmpAndroidWorkerTest）exit 0，耗时 16 秒，24 tasks 中 9 executed、15 UP-TO-DATE。报告合计 22 项，21 项实际运行通过，1 项沿用上游 contentUriTrigger 忽略，零失败/错误；全部 11 个原 Host 源文件仍参与编译。
+真实 WorkDatabase 测试覆盖一次性/周期执行身份、连续 A→B→C UPDATE 的输入/标签/generation 与旧 ID 保持、KEEP 不插入新请求、旧无 KMP 元数据原生任务的查询取消，以及桥注册和清理。Host 结果不证明设备进程恢复或前台服务。
+根 App `aiVerifyTier1` exit 0（5 秒，30 tasks 中 2 executed、28 UP-TO-DATE）；`.1/.2` 共 24 个已验收制品摘要全部保持。本批只预留新的私有版本，尚未发布或切换应用依赖。

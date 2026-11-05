@@ -89,19 +89,16 @@ internal fun AndroidWorkInfo.State.toKmp(): WorkInfo.State = when (this) {
     AndroidWorkInfo.State.CANCELLED -> WorkInfo.State.CANCELLED
 }
 
-internal fun AndroidWorkInfo.toKmp(): WorkInfo? {
-    val id = tags.extractKmpId() ?: return null
-    return WorkInfo(
-        id = id,
-        state = state.toKmp(),
-        progress = WorkProgress(
-            progress = progress.getInt("progress", 0),
-        ),
-        outputData = outputData.toKmp(),
-        tags = tags.userTags(),
-        runAttemptCount = runAttemptCount,
-    )
-}
+internal fun AndroidWorkInfo.toKmp(): WorkInfo = WorkInfo(
+    id = Uuid.parse(id.toString()),
+    state = state.toKmp(),
+    progress = WorkProgress(
+        progress = progress.getInt("progress", 0),
+    ),
+    outputData = outputData.toKmp(),
+    tags = tags.userTags(),
+    runAttemptCount = runAttemptCount,
+)
 
 internal fun Data.toKmp(): WorkData {
     val pairs = keyValueMap.entries.mapNotNull { (key, value) ->
