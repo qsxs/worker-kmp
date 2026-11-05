@@ -76,7 +76,7 @@ class AndroidWorkManager(context: Context) : WorkManager {
     // ── Private builders ──────────────────────────────────────────────────────
 
     private fun io.github.mobilebytelabs.worker.OneTimeWorkRequest.toAndroidOneTime(): OneTimeWorkRequest {
-        val data = buildInputData(workerClass, id, inputData)
+        val data = buildInputData(workerClass, id, inputData, tags)
         val builder = OneTimeWorkRequestBuilder<KmpAndroidWorker>()
             .setId(UUID.fromString(id.toString()))
             .setInputData(data)
@@ -105,7 +105,7 @@ class AndroidWorkManager(context: Context) : WorkManager {
     }
 
     private fun io.github.mobilebytelabs.worker.PeriodicWorkRequest.toAndroidPeriodic(): PeriodicWorkRequest {
-        val data = buildInputData(workerClass, id, inputData)
+        val data = buildInputData(workerClass, id, inputData, tags)
         val intervalMs = repeatInterval.inWholeMilliseconds
             .coerceAtLeast(PeriodicWorkRequest.MIN_PERIODIC_INTERVAL_MILLIS)
         val builder = PeriodicWorkRequestBuilder<KmpAndroidWorker>(intervalMs, TimeUnit.MILLISECONDS)
@@ -130,15 +130,17 @@ class AndroidWorkManager(context: Context) : WorkManager {
         workerClass: String,
         id: Uuid,
         inputData: io.github.mobilebytelabs.worker.WorkData,
+        tags: Set<String>,
     ): androidx.work.Data {
-        val userPairs: Array<Pair<String, Any?>> = inputData.keyValueMap()
-            .entries
-            .map { (k, v) -> k to v }
-            .toTypedArray()
-        return androidx.work.workDataOf(
-            KEY_KMP_CLASS to workerClass,
-            KEY_KMP_ID to id.toString(),
-            *userPairs,
-        )
+        require(!inputData.hasKey(KEY_KMP_CLASS) && !inputData.hasKey(KEY_KMP_ID)) {
+            "Input data contains reserved key $KEY_KMP_CLASS or $KEY_KMP_ID"
+        }
+        require(tags.none { it.startsWith(TAG_KMP_ID_PREFIX) }) { "Tags contain reserved prefix $TAG_KMP_ID_PREFIX" }
+        // 原生 Builder 对包含元数据的最终载荷一次性执行类型与大小校验，失败时尚未入队。
+        return androidx.work.Data.Builder()
+            .putAll(inputData.keyValueMap())
+            .putString(KEY_KMP_CLASS, workerClass)
+            .putString(KEY_KMP_ID, id.toString())
+            .build()
     }
 }

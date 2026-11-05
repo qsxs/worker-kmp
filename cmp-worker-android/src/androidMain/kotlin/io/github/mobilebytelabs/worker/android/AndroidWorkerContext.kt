@@ -13,8 +13,10 @@ internal class AndroidWorkerContext(
     override val tags: Set<String>,
 ) : WorkerContext {
     override suspend fun setProgress(progress: WorkProgress) {
+        require(!progress.data.hasKey(KEY_KMP_PROGRESS)) { "Progress data contains reserved key $KEY_KMP_PROGRESS" }
         val data = Data.Builder()
-            .putInt("progress", progress.progress)
+            .putAll(progress.data.keyValueMap())
+            .putInt(KEY_KMP_PROGRESS, progress.progress)
             .build()
         androidWorker.setProgress(data)
     }

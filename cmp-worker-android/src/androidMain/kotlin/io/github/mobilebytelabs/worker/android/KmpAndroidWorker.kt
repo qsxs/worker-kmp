@@ -30,7 +30,7 @@ class KmpAndroidWorker(appContext: Context, params: WorkerParameters) : Coroutin
         val factory = KmpWorkerFactory.instance
             ?: return Result.failure()
 
-        val userInputData = inputData.toKmp()
+        val userInputData = inputData.toKmpInputData()
         val userTags = tags.userTags()
         val context = AndroidWorkerContext(this, nativeId, userInputData, userTags)
         val worker = factory.create(workerClass, context)
@@ -41,7 +41,11 @@ class KmpAndroidWorker(appContext: Context, params: WorkerParameters) : Coroutin
                 is WorkResult.Success -> Result.success(result.outputData.toAndroid())
 
                 is WorkResult.Failure -> Result.failure(
-                    androidx.work.workDataOf("error" to result.message),
+                    if (result.outputData.keyValueMap().isEmpty()) {
+                        androidx.work.workDataOf("error" to result.message)
+                    } else {
+                        result.outputData.toAndroid()
+                    },
                 )
 
                 is WorkResult.Retry -> Result.retry()

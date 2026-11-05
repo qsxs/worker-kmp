@@ -21,6 +21,7 @@ import androidx.work.WorkInfo as AndroidWorkInfo
 
 internal const val KEY_KMP_ID = "kmp_worker_id"
 internal const val KEY_KMP_CLASS = "kmp_worker_class"
+internal const val KEY_KMP_PROGRESS = "kmp_worker_progress_percent"
 internal const val TAG_KMP_ID_PREFIX = "kmp_id:"
 
 internal fun Uuid.toTag(): String = "$TAG_KMP_ID_PREFIX$this"
@@ -93,54 +94,19 @@ internal fun AndroidWorkInfo.toKmp(): WorkInfo = WorkInfo(
     id = Uuid.parse(id.toString()),
     state = state.toKmp(),
     progress = WorkProgress(
-        progress = progress.getInt("progress", 0),
+        progress = progress.getInt(KEY_KMP_PROGRESS, 0),
+        data = WorkData(*progress.keyValueMap.filterKeys { it != KEY_KMP_PROGRESS }.map { it.toPair() }.toTypedArray()),
     ),
     outputData = outputData.toKmp(),
     tags = tags.userTags(),
     runAttemptCount = runAttemptCount,
 )
 
-internal fun Data.toKmp(): WorkData {
-    val pairs = keyValueMap.entries.mapNotNull { (key, value) ->
-        // Skip internal KMP keys stored in work data
-        if (key == KEY_KMP_CLASS || key == KEY_KMP_ID) return@mapNotNull null
-        key to value
-    }
-    return WorkData(*pairs.toTypedArray())
-}
+internal fun Data.toKmp(): WorkData = WorkData(*keyValueMap.map { it.toPair() }.toTypedArray())
 
-internal fun WorkData.toAndroid(): Data {
-    val builder = Data.Builder()
-    keyValueMap().forEach { (key, value) ->
-        when (value) {
-            is String -> builder.putString(key, value)
+// 仅执行输入剥离身份元数据；输出和业务进度保留同名字段。
+internal fun Data.toKmpInputData(): WorkData = WorkData(
+    *keyValueMap.filterKeys { it != KEY_KMP_CLASS && it != KEY_KMP_ID }.map { it.toPair() }.toTypedArray(),
+)
 
-            is Int -> builder.putInt(key, value)
-
-            is Long -> builder.putLong(key, value)
-
-            is Float -> builder.putFloat(key, value)
-
-            is Double -> builder.putDouble(key, value)
-
-            is Boolean -> builder.putBoolean(key, value)
-
-            is Array<*> -> {
-                @Suppress("UNCHECKED_CAST")
-                when {
-                    value.isArrayOf<String>() -> builder.putStringArray(
-                        key,
-                        (value as Array<String>).map {
-                            it
-                        }.toTypedArray(),
-                    )
-
-                    value.isArrayOf<Int>() -> builder.putIntArray(key, (value as Array<Int>).toIntArray())
-
-                    value.isArrayOf<Long>() -> builder.putLongArray(key, (value as Array<Long>).toLongArray())
-                }
-            }
-        }
-    }
-    return builder.build()
-}
+internal fun WorkData.toAndroid(): Data = Data.Builder().putAll(keyValueMap()).build()

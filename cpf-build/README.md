@@ -87,10 +87,10 @@ Android KMP library、Compose Multiplatform、Compose compiler 插件，不使�
 
 坐标由本目录 `gradle.properties` 的 `cpf.group`、`cpf.version` 提供，默认值为：
 
-- core KMP 根坐标：`com.lihb.forks.worker:worker-kmp:4.0.8-cpf.3-android.1`。
-- core JVM 坐标：`com.lihb.forks.worker:worker-kmp-jvm:4.0.8-cpf.3-android.1`。
-- Android KMP 根坐标：`com.lihb.forks.worker:worker-android:4.0.8-cpf.3-android.1`。
-- Android 目标叶坐标：`com.lihb.forks.worker:worker-android-android:4.0.8-cpf.3-android.1`。
+- core KMP 根坐标：`com.lihb.forks.worker:worker-kmp:4.0.8-cpf.3-android.2`。
+- core JVM 坐标：`com.lihb.forks.worker:worker-kmp-jvm:4.0.8-cpf.3-android.2`。
+- Android KMP 根坐标：`com.lihb.forks.worker:worker-android:4.0.8-cpf.3-android.2`。
+- Android 目标叶坐标：`com.lihb.forks.worker:worker-android-android:4.0.8-cpf.3-android.2`。
 - 文件仓库：`cpf-build/build/repository`，发布仓库名称为 `Cpf`。
 
 Android 坐标按 KMP 的 `kotlinMultiplatform` / `android` publication 分别设置，
@@ -341,3 +341,32 @@ C1 同时将默认私有版本预留为 `4.0.8-cpf.3-android.1`，防止变更�
 独立 consumer 从私有 Android 根 GAV 解析，同版私有 core 闭包完整，无上游 worker 重复制品；实际 `checkDebugAarMetadata compileDebugKotlin assembleDebug` exit 0、11 秒，36 tasks 中 5 executed、31 UP-TO-DATE。编译与运行时依赖图均 exit 0。consumer 使用主仓 wrapper 9.5 / AGP 9.1 / Kotlin 2.4.20 / JVM 17，未通过 project、composite、mavenLocal 或直接 AAR 绕过。
 AAR 保留 launcher 与 notificationCustomizer 及本批三类生产实现，class major 55（JVM 11）；Android 叶 sources.jar 的三份源码与 C1 源文件字节一致。GMM 叶 component 正常回指根所有者，已核实根叶版本、关联文件及依赖闭包；未将叶 component 强行要求为物理叶名。
 校验工具初始误判了 GMM 所有者和 Android 源码制品位置，已分别改按真实根叶关联、叶 sources.jar 核对；没有修改库代码或制品。验证结果不包含 APK 安装运行、系统后台/前台服务或 Native/iOS 验收。App 尚未切换到 fork，SDK 和现有功能表现仍保持。
+
+## C2 Android Data、进度与输出
+
+Android Data 转换统一由原生 `Data.Builder.putAll(...).build()` 校验支持类型与 10KB
+序列化限制；转回 WorkData 保留原生装箱数组，不推测空数组元素类型、不转回原始数组。
+顶层 null 和数组内 null 沿用 WorkManager 2.11.2 的内存及持久化语义，测试以原生
+字节序列化往返为对照。通用转换不删除任何字段，只有 Worker 执行输入剥离 class/id 元数据。
+
+单次与周期请求在调用原生入队前拒绝 `kmp_worker_class`、`kmp_worker_id` 输入键和
+`kmp_id:` 用户标签前缀；其他 `kmp_*` 业务字段与标签仍允许使用。
+业务输入和身份元数据合并后只构建一次最终 Data；本批所测未知类型及常规可序列化输入的最终大小超限，均在提交前失败并无新数据库记录，极端原生编码边界见下文。
+
+进度使用 `kmp_worker_progress_percent` 存放百分比，只禁止进度业务载荷占用该键，
+完整传递其余字段并等待原生 ProgressUpdater 完成。WorkInfo 只剥离此百分比键，缺失时返回 0，
+保留旧备份 INDEX/TOTAL/MESSAGE/LAST_RESULT_*、业务 `progress` 和 class/id 字段。
+Success 与非空 Failure 输出使用统一转换，完整保留 Failure 业务载荷（包括用户 `error` 字段）；
+只有 Failure 输出为空时保留既有 message → `error` 兼容行为，未增加 core 或 facade API。
+
+默认私有版本预留为 `4.0.8-cpf.3-android.2`，避免覆盖 C1p 已发布的 `.3-android.1`。
+完整生产/host 编译、五类定向 host 测试、旧制品摘要与 App Tier 1 已完成，实际结果见下文；
+新版本发布与实际 consumer 验收另行进行。
+App、SDK、依赖与 iOS preview 逻辑未改动，未据此声明设备或系统调度行为通过。
+
+C2 的 10KB 验证按本批实际测试的常规可序列化输入记录。源码复核另观察到 WorkManager 2.11.2 的原生序列化捕获 IOException 后可能返回空字节；例如单个字符串超出 modified-UTF 长度上限属于原生边界，本批未运行该极端场景，也不承诺它必然在入队前抛错。该行为沿用既有 SDK，不新增项目编码层或额外生产守卫，未将其列为产品需求或本批通过项。
+
+### C2 实际门禁
+
+完整生产与 Host 源集编译通过；五个完整类过滤（WorkConvertersTest、AndroidWorkManagerTest、KmpAndroidWorkerTest、AndroidWorkManagerIntegrationTest、AndroidWorkerContextTest）的门禁 exit 0，16 秒，24 tasks 中 4 executed、20 UP-TO-DATE。报告合计 40 项，39 项运行通过、1 项沿用上游 contentUriTrigger 忽略，零失败/错误。类型/序列化矩阵、真实 Worker 调用与注入 ProgressUpdater 的等待契约、Success/Failure 输出、入队前冲突与大小限制均有定向断言；未将此夹具作为 SDK WorkProgressUpdater 实际落库验收，C1 连续 UPDATE/KEEP/旧任务用例保持。
+首轮仅测试编译遇到数组/Class 泛型推断和内部 Room 类型依赖问题；只修测试类型表达及公开查询，未增加依赖或弱化断言，四个生产文件摘要修前修后保持。根 App `aiVerifyTier1` exit 0（6 秒，30 tasks 中 2 executed、28 UP-TO-DATE）。已接受的 `.1/.2` 与 C1p 共 40 个制品摘要保持；`.3-android.2` 尚未发布，App 尚未切换。
