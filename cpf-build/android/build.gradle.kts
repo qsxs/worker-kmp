@@ -16,6 +16,7 @@ group = rootProject.group
 version = rootProject.version
 
 val upstreamSources = rootProject.layout.projectDirectory.dir("../cmp-worker-android/src/androidMain")
+val upstreamHostTestSources = rootProject.layout.projectDirectory.dir("../cmp-worker-android/src/androidHostTest")
 
 @OptIn(ExperimentalKotlinGradlePluginApi::class)
 kotlin {
@@ -30,6 +31,9 @@ kotlin {
             libs.versions.android.minSdk
                 .get()
                 .toInt()
+        withHostTestBuilder {}.configure {
+            isIncludeAndroidResources = true
+        }
         compilerOptions {
             jvmTarget.set(JvmTarget.JVM_11)
         }
@@ -52,6 +56,21 @@ kotlin {
                 api(libs.compose.runtime)
                 api(libs.androidx.activity.compose)
                 api(libs.koin.android)
+            }
+        }
+        val androidHostTest by getting {
+            // 直接挂接全部原始测试和资源，不复制或筛选测试源码。
+            kotlin.setSrcDirs(listOf(upstreamHostTestSources.dir("kotlin")))
+            resources.setSrcDirs(listOf(upstreamHostTestSources.dir("resources")))
+            dependencies {
+                implementation(libs.kotlin.test)
+                implementation(libs.kotlin.test.junit)
+                implementation(libs.koin.core)
+                implementation(libs.koin.test)
+                implementation(libs.robolectric)
+                implementation(libs.androidx.work.testing)
+                implementation(libs.androidx.test.core)
+                implementation(libs.kotlinx.coroutines.test)
             }
         }
     }

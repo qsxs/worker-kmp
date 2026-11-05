@@ -23,13 +23,15 @@
 | commonTest | `cmp-worker-kmp/src/commonTest/kotlin` |
 | jvmTest | `cmp-worker-kmp/src/jvmTest/kotlin` |
 | androidMain（`:android`） | `cmp-worker-android/src/androidMain/kotlin` |
+| androidHostTest（`:android`） | `cmp-worker-android/src/androidHostTest/kotlin` |
 
 各源集同级的 `resources` 目录也已挂接；目录不存在时没有对应资源输入。
 测试源集仅用于主控明确授权的定向测试，不代表已运行测试。
 Android producer 包含该目录全部 10 个 Kotlin 文件，保留 `WorkerKmpComposeActivity`、
 `WorkerKmpStarterApplication` 与 `AndroidForegroundBridge.notificationCustomizer`。
 原空 `cmp-worker-android/src/androidMain/AndroidManifest.xml` 经 AGP 公共 Variant API
-直接加入 Manifest 输入，不删减 API、不复制源码，也不接入上游 host/device 测试。
+直接加入 Manifest 输入，不删减 API、不复制源码。上游 Android host 测试接线见下文 C0，
+不接入上游 device 测试。
 
 ## 工具链与依赖
 
@@ -41,8 +43,9 @@ Android producer 包含该目录全部 10 个 Kotlin 文件，保留 `WorkerKmpC
 coroutines `1.11.0`、datetime `0.8.0`、Kermit `2.2.0`。
 Android producer 也沿用 catalog 的 AGP `9.4.0`、CMP `1.12.0`、
 WorkManager `2.11.2`、Koin `4.2.2`、Activity Compose `1.13.0`、compileSdk `37`、minSdk `24`。
-生产依赖及其 `api` 可见性与上游 core 一致；测试依赖沿用 Kotlin Test 和
-coroutines-test。Android 使用 `api(project(":"))` 依赖同组 core；WorkManager、
+生产依赖及其 `api` 可见性与上游 core 一致；core 测试依赖沿用 Kotlin Test 和
+coroutines-test，Android host 测试依赖沿用原 Android 模块的 catalog alias。
+Android 使用 `api(project(":"))` 依赖同组 core；WorkManager、
 Compose Runtime、Activity Compose、Koin Android 的公开签名所需依赖以 `api` 暴露。
 不复制依赖或版本目录，不配置本地 jar。
 
@@ -123,7 +126,7 @@ Android 坐标按 KMP 的 `kotlinMultiplatform` / `android` publication 分别�
 - 未完成 Android / iOS / OHOS 生产或设备验收，不据此声明全平台或所有语义修复通过。
 - 本轮完成范围为 A2 JVM bootstrap 与结构 metadata；Native 声明编译留待后续目标档位。
 
-## A3a Android producer 与消费验证（待主控执行）
+## A3a Android producer 与消费验证
 
 本批只新增 producer 和消费探针，下面是预期验收顺序，未预填任何通过结果。
 先使用 fork wrapper `9.7.1` / JDK `21` 发现 `:android` 实际编译与 AAR 任务名，
@@ -182,7 +185,7 @@ targetSdk `36`、JVM `17`；沿用宿主的 AGP 内置 Kotlin 配置，应用 ID
 - 主控仅对指定 `8` 个路径执行实际支持的 `spotlessIdeHook`，退出码 `0`，约 `53s`，无白名单外改动。
 - 未完成 iOS / OHOS 运行验收；本批通过不代表全平台或全部调度、前台通知语义已修复。
 
-## A3b 可选 iOS producer（待主控验证）
+## A3b 可选 iOS producer（Windows 配置已验，Native 待 Mac）
 
 仅传入 `-Pcpf.enableIos=true` 才包含 `:ios`，并为 core 增加 `iosArm64` 与
 `iosSimulatorArm64`；未传参数的目标、源码输入和默认 `4.0.8-cpf.2` 版本不变。
@@ -258,3 +261,42 @@ GMM 私有依赖和 framework 的实际内容；发布任务不能代替 Native 
 - 默认 Android producer 编译及完整 `:android:bundleAndroidMainAar` 通过（1 秒，20 tasks 中 18 UP-TO-DATE）；AGP 9.1 消费编译及组装通过（2 秒，36 tasks 全部 UP-TO-DATE）。本次主要复用缓存。
 - 非 Mac 发布检查按预期明确拒绝（该负向检查 exit 1，匹配专属错误）；三模块发布 dry-run exit 0，仅证明任务依赖图可构造。未执行 Native 编译或发布。
 - 已验收 `.2` 的 16 个制品 SHA-256 全部保持。iOS Native 编译、framework 链接、Swift Host 和运行验收仍等待 Mac/Xcode。
+
+## C0 Android host 测试接线
+
+`:android` 通过 `withHostTestBuilder` 启用 host 测试，并设置
+`isIncludeAndroidResources = true`，供 Robolectric 使用 Android 资源。
+`androidHostTest` 直接读取上游 `cmp-worker-android/src/androidHostTest/kotlin`
+和同级 `resources`，当前包含全部 11 个测试文件；不存在的资源目录不生成占位文件。
+接线不复制、删除、修补或筛选原测试，也不改变原测试内已有的忽略标记。
+
+测试依赖与原 `cmp-worker-android/build.gradle.kts` 一致：Kotlin Test / JUnit、
+Koin Core / Test `4.2.2`、Robolectric `4.17`、WorkManager Testing `2.11.2`、
+AndroidX Test Core `1.7.0` 和 coroutines-test `1.11.0`，全部复用现有 catalog alias。
+不因本地缓存是否命中而新增或调整版本。生产源码、API、依赖可见性、发布配置和版本不变；
+默认仍是 JVM / Android，iOS 仍须显式 opt-in。
+
+主控从 fork 根目录使用 wrapper `9.7.1` / JDK `21` 重新发现任务：
+
+```powershell
+& .\gradlew.bat -p cpf-build tasks --all --console=plain
+```
+
+任务发现已核实 `:android:compileAndroidHostTest` 与 `:android:testAndroidHostTest` 存在。
+以下为本批验证顺序，真实结果见节末：
+
+1. 编译完整原 Android host 测试源集，保留全部测试文件参与编译。
+2. 使用实际 host 测试任务，以 `--tests "io.github.mobilebytelabs.worker.android.WorkConvertersTest"`
+   运行定向 baseline，分别记录通过、失败和跳过数；baseline 不等于全部 host 测试通过。
+3. 再执行 Android producer 编译和根 App Tier 1，记录实际任务、退出码和必要错误。
+4. 核对已有 `.1` / `.2` 私有制品的 SHA-256 保持，本批不执行发布或覆盖已有坐标。
+
+若完整测试编译暴露原 fixture 与当前 API 不一致，保留真实错误交主控决定；
+本批未修改测试或生产源码；主控已完成下述门禁，未发布新制品。
+Host / Robolectric 结果不能作为真实设备后台调度、进程生命周期、
+前台服务或系统通知行为的验收，相关系统级验证仍须另行执行。
+
+### C0 实际门禁（2026-11-05）
+
+任务发现 exit 0（7 秒）；`:android:compileAndroidMain :android:compileAndroidHostTest :android:testAndroidHostTest --tests "io.github.mobilebytelabs.worker.android.WorkConvertersTest"` exit 0（48 秒，24 tasks 中 17 executed、7 UP-TO-DATE）。全部 11 个原 host 测试文件参加编译；定向类报告 9 项，8 项运行通过、1 项沿用上游 @Ignore 的 contentUriTrigger 用例，零失败/错误，不表示整个 host 测试集已运行。
+根 App `aiVerifyTier1` exit 0（7 秒，30 tasks 中 2 executed、28 UP-TO-DATE）。`.1` 的 8 个及 `.2` 的 16 个已验收制品 SHA-256 全部保持，未执行发布。Native、真实设备后台/前台行为均不在本次验收范围。
