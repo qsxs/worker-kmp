@@ -31,6 +31,13 @@ class AndroidWorkerContextTest {
         assertEquals(tags, ctx.tags)
     }
 
+    @Test
+    fun runAttemptCount_oldContextImplementationDefaultsToZero() {
+        // 旧实现不新增 override，编译和默认值断言共同验证源码兼容性。
+        val ctx = buildFakeContext(Uuid.random(), WorkData.EMPTY)
+        assertEquals(0, ctx.runAttemptCount)
+    }
+
     private fun buildFakeContext(id: Uuid, inputData: WorkData, tags: Set<String> = emptySet()) =
         object : io.github.mobilebytelabs.worker.WorkerContext {
             override val id = id

@@ -12,6 +12,9 @@ internal class AndroidWorkerContext(
     override val inputData: WorkData,
     override val tags: Set<String>,
 ) : WorkerContext {
+    override val runAttemptCount: Int
+        get() = androidWorker.runAttemptCount
+
     override suspend fun setProgress(progress: WorkProgress) {
         require(!progress.data.hasKey(KEY_KMP_PROGRESS)) { "Progress data contains reserved key $KEY_KMP_PROGRESS" }
         val data = Data.Builder()

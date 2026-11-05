@@ -12,8 +12,16 @@ import io.github.mobilebytelabs.worker.WorkData
 import io.github.mobilebytelabs.worker.oneTimeWorkRequest
 import io.github.mobilebytelabs.worker.periodicWorkRequest
 import io.github.mobilebytelabs.worker.workDataOf
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
@@ -28,7 +36,10 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.minutes
+import kotlin.time.Duration.Companion.seconds
 import kotlin.uuid.Uuid
+import io.github.mobilebytelabs.worker.ExistingWorkPolicy as KmpExistingWorkPolicy
+import io.github.mobilebytelabs.worker.WorkInfo as KmpWorkInfo
 
 /** 模拟旧 BackupWorker 类的普通原生任务，不包含任何 KMP 输入或内部标签。 */
 class LegacyNativeBackupWorker(context: Context, params: WorkerParameters) : Worker(context, params) {
@@ -58,6 +69,93 @@ class AndroidWorkManagerTest {
     @Test
     fun getWorkInfoById_withNonexistentId_returnsNull() = runTest {
         assertNull(fixture.manager.getWorkInfoById(Uuid.random()))
+    }
+
+    @Test
+    fun getWorkInfoByIdFlow_continuousCollectorObservesNativeInsertAndCancellation() =
+        runBlocking(Dispatchers.Default) {
+            // 使用真实时钟等待 Room 的异步通知；每次收到状态后才允许下一次数据库变更。
+            withTimeout(10.seconds) {
+                val id = Uuid.parse("d0295c50-d418-4f28-b58f-f23105004530")
+                val events = Channel<KmpWorkInfo?>(Channel.RENDEZVOUS)
+                val collector = launch(start = CoroutineStart.UNDISPATCHED) {
+                    fixture.manager.getWorkInfoByIdFlow(id).collect { events.send(it) }
+                }
+                try {
+                    assertNull(events.receive())
+                    val request = OneTimeWorkRequestBuilder<LegacyNativeBackupWorker>()
+                        .setId(id.nativeId())
+                        .setConstraints(Constraints.Builder().setRequiresCharging(true).build())
+                        .setInitialDelay(1, TimeUnit.HOURS)
+                        .addTag("continuous-native")
+                        .build()
+                    fixture.native.enqueue(request).result.await()
+
+                    val enqueued = assertNotNull(events.receive())
+                    assertEquals(id, enqueued.id)
+                    assertEquals(KmpWorkInfo.State.ENQUEUED, enqueued.state)
+                    assertTrue("continuous-native" in enqueued.tags)
+                    assertTrue(collector.isActive)
+
+                    fixture.native.cancelWorkById(request.id).result.await()
+
+                    val cancelled = assertNotNull(events.receive())
+                    assertEquals(id, cancelled.id)
+                    assertEquals(KmpWorkInfo.State.CANCELLED, cancelled.state)
+                    assertEquals(WorkInfo.State.CANCELLED, fixture.native.getWorkInfoById(request.id).await()?.state)
+                    assertTrue(collector.isActive)
+                    assertTrue(fixture.executions.isEmpty())
+                } finally {
+                    collector.cancelAndJoin()
+                    events.close()
+                }
+            }
+        }
+
+    @Test
+    fun cancelUniqueWork_cancelsKeepAppendChainWithoutCancellingSameTagOrMissingName() = runTest {
+        val uniqueName = "cancel-unique-chain"
+        val head = delayedOneTime("head", uniqueName)
+        val ignored = delayedOneTime("ignored", "ignored-keep")
+        val child = delayedOneTime("child", uniqueName)
+        val tail = delayedOneTime("tail", uniqueName)
+        val unrelated = delayedOneTime("unrelated", uniqueName)
+        fixture.manager.enqueueUniqueWork(uniqueName, KmpExistingWorkPolicy.KEEP, head)
+        fixture.manager.enqueueUniqueWork(uniqueName, KmpExistingWorkPolicy.KEEP, ignored)
+        fixture.manager.enqueueUniqueWork(uniqueName, KmpExistingWorkPolicy.APPEND, child)
+        fixture.manager.enqueueUniqueWork(uniqueName, KmpExistingWorkPolicy.APPEND, tail)
+        fixture.manager.enqueueUniqueWork("unrelated-unique-chain", KmpExistingWorkPolicy.KEEP, unrelated)
+        val chainIds = setOf(head.id.nativeId(), child.id.nativeId(), tail.id.nativeId())
+        val initialChain = fixture.native.getWorkInfosForUniqueWork(uniqueName).get()
+        assertEquals(chainIds, initialChain.map { it.id }.toSet())
+        assertEquals(WorkInfo.State.ENQUEUED, initialChain.single { it.id == head.id.nativeId() }.state)
+        assertEquals(WorkInfo.State.BLOCKED, initialChain.single { it.id == child.id.nativeId() }.state)
+        assertEquals(WorkInfo.State.BLOCKED, initialChain.single { it.id == tail.id.nativeId() }.state)
+        assertNull(fixture.native.getWorkInfoById(ignored.id.nativeId()).get())
+        assertNull(fixture.manager.getWorkInfoById(ignored.id))
+        val originalStates = listOf(head, child, tail, unrelated).associate { request ->
+            request.id to assertNotNull(fixture.native.getWorkInfoById(request.id.nativeId()).get()).state
+        }
+
+        fixture.manager.cancelUniqueWork("missing-unique-chain")
+
+        originalStates.forEach { (id, state) ->
+            assertEquals(state, fixture.native.getWorkInfoById(id.nativeId()).get()?.state)
+        }
+        fixture.manager.cancelUniqueWork(uniqueName)
+
+        val cancelledChain = fixture.native.getWorkInfosForUniqueWork(uniqueName).get()
+        assertEquals(chainIds, cancelledChain.map { it.id }.toSet())
+        assertTrue(cancelledChain.all { it.state == WorkInfo.State.CANCELLED })
+        listOf(head, child, tail).forEach { request ->
+            assertEquals(KmpWorkInfo.State.CANCELLED, fixture.manager.getWorkInfoById(request.id)?.state)
+        }
+        val survivor = assertNotNull(fixture.native.getWorkInfoById(unrelated.id.nativeId()).get())
+        assertTrue(uniqueName in survivor.tags)
+        assertEquals(WorkInfo.State.ENQUEUED, survivor.state)
+        assertEquals(KmpWorkInfo.State.ENQUEUED, fixture.manager.getWorkInfoById(unrelated.id)?.state)
+        assertNull(fixture.native.getWorkInfoById(ignored.id.nativeId()).get())
+        assertTrue(fixture.executions.isEmpty())
     }
 
     @Test

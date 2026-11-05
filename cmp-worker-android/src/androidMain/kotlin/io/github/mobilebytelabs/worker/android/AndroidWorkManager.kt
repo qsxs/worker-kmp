@@ -62,6 +62,11 @@ class AndroidWorkManager(context: Context) : WorkManager {
         wm.cancelAllWorkByTag(tag).result.await()
     }
 
+    /** 按原生 unique name 取消整条未完成任务链，并等待数据库操作完成。 */
+    suspend fun cancelUniqueWork(uniqueWorkName: String) {
+        wm.cancelUniqueWork(uniqueWorkName).result.await()
+    }
+
     override fun getWorkInfosByTag(tag: String): Flow<List<WorkInfo>> =
         wm.getWorkInfosByTagFlow(tag).map { list -> list.map { it.toKmp() } }
 
@@ -72,6 +77,10 @@ class AndroidWorkManager(context: Context) : WorkManager {
 
     override suspend fun getWorkInfoById(id: Uuid): WorkInfo? =
         wm.getWorkInfoById(UUID.fromString(id.toString())).await()?.toKmp()
+
+    /** 持续观察原生 ID；不存在的记录保持原生 null 语义。 */
+    fun getWorkInfoByIdFlow(id: Uuid): Flow<WorkInfo?> =
+        wm.getWorkInfoByIdFlow(UUID.fromString(id.toString())).map { it?.toKmp() }
 
     // ── Private builders ──────────────────────────────────────────────────────
 

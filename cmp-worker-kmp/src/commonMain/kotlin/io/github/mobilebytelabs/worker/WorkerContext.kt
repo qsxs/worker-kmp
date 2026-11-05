@@ -24,6 +24,10 @@ interface WorkerContext {
     /** Tags attached to the originating [WorkRequest]. */
     val tags: Set<String>
 
+    /** 当前执行的重试次数；默认值仅保留已有实现的源码兼容性，未接线的平台返回 0。 */
+    val runAttemptCount: Int
+        get() = 0
+
     /**
      * Reports intermediate progress to [WorkInfo.progress] observers.
      *

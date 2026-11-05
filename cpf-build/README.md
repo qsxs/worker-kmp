@@ -87,10 +87,10 @@ Android KMP library、Compose Multiplatform、Compose compiler 插件，不使�
 
 坐标由本目录 `gradle.properties` 的 `cpf.group`、`cpf.version` 提供，默认值为：
 
-- core KMP 根坐标：`com.lihb.forks.worker:worker-kmp:4.0.8-cpf.3-android.2`。
-- core JVM 坐标：`com.lihb.forks.worker:worker-kmp-jvm:4.0.8-cpf.3-android.2`。
-- Android KMP 根坐标：`com.lihb.forks.worker:worker-android:4.0.8-cpf.3-android.2`。
-- Android 目标叶坐标：`com.lihb.forks.worker:worker-android-android:4.0.8-cpf.3-android.2`。
+- core KMP 根坐标：`com.lihb.forks.worker:worker-kmp:4.0.8-cpf.3-android.3`。
+- core JVM 坐标：`com.lihb.forks.worker:worker-kmp-jvm:4.0.8-cpf.3-android.3`。
+- Android KMP 根坐标：`com.lihb.forks.worker:worker-android:4.0.8-cpf.3-android.3`。
+- Android 目标叶坐标：`com.lihb.forks.worker:worker-android-android:4.0.8-cpf.3-android.3`。
 - 文件仓库：`cpf-build/build/repository`，发布仓库名称为 `Cpf`。
 
 Android 坐标按 KMP 的 `kotlinMultiplatform` / `android` publication 分别设置，
@@ -376,3 +376,41 @@ C2 的 10KB 验证按本批实际测试的常规可序列化输入记录。源�
 已将 C2 提交 `d264cbf` 对应的 `4.0.8-cpf.3-android.2` 成组发布到本地文件仓库，发布 exit 0（2 秒，44 tasks 中 24 executed、20 UP-TO-DATE）。四个私有坐标同版，16 个新制品摘要已登记；此前已验收的 40 个制品摘要保持，未覆盖旧版本或写外部仓库。
 独立 AGP 9.1 / Gradle 9.5 / Kotlin 2.4.20 / JVM 17 消费工程仅声明 Android 根 GAV，实际元数据检查、Kotlin 编译与 APK 组装 exit 0（10 秒，36 tasks 中 5 executed、31 UP-TO-DATE）。compile/runtime 两份依赖图均验证同版私有 core 闭包，没有上游 worker 重复依赖或 project/composite/mavenLocal/直接 AAR 绕过。
 AAR 中完整 launcher/customizer、Context 和相关实现均保留，class major 55；Android 叶 sources.jar 与 C2 的四份生产源码字节一致，GMM 根叶关系及 POM 依赖通过检查。验证仍不包含 APK 安装、SDK 进度落库、系统后台/前台服务、Native 或 iOS；App 尚未切换私有 fork，原有 SDK 与业务行为保持。
+
+## C2b 执行次数与 Android 原生管理能力
+
+core 的公开 `WorkerContext` 新增默认 `runAttemptCount: Int` getter，默认返回 `0`，
+已有未覆写该属性的实现可继续从源码编译。Android 的 `AndroidWorkerContext` 覆写它，
+直接读取当前原生 `KmpAndroidWorker.runAttemptCount`，不从输入数据、标签或重试配置推测次数。
+默认值只提供源码兼容性，不承诺旧二进制兼容，也不代表 iOS 或其他平台已经取得真实执行次数。
+本批未给 `CoroutineWorker` 新增便捷属性，也未扩大 common `WorkManager` 接口。
+
+具体 `AndroidWorkManager` 增加两个 Android 方法：
+
+- `suspend cancelUniqueWork(String)` 委托原生同名 API，并等待 `Operation.result` 完成，
+  按 unique name 取消未完成任务链，不通过 tag 模拟。
+- `getWorkInfoByIdFlow(Uuid): Flow<WorkInfo?>` 持续映射原生 ID Flow，
+  保留不存在记录的 `null`，不轮询、不将单次查询包装为持续状态。
+
+以上公开 getter 与两个具体 Android 方法属于 ABI 增量；已对本批编译类用 `javap` 核实，
+core 为 `public default int getRunAttemptCount()`，Android 覆写 getter，并具有原生 unique 取消的 suspend ABI 与 ID Flow 方法；不由此推断所有已编译消费者二进制兼容。
+原入队方法的等待行为、C1 的原生 UUID 身份、C2 的 Data/进度/Failure 载荷处理均保留。
+
+三个现有 Host 测试文件复用原夹具并保留原有断言：旧 fake context 不增加 override 而断言默认 `0`；
+官方 `TestListenableWorkerBuilder.setRunAttemptCount(0/3)` 核对原生 Worker 与传给工厂的实际
+Android context；同一持续 ID Flow collector 通过 rendezvous channel 依次确认
+`null → ENQUEUED → CANCELLED`，固定 ID、约束与延迟阻止提前执行，原生取消触发最后一次更新，
+真实调度器上的有界 timeout 负责失败收敛，无 sleep 或反复 `first()` 重订阅。
+unique name 用例构建 KEEP 与两次 APPEND 的真实任务链，检查忽略的 KEEP 未插入、
+整链取消、另一条故意携带同名 tag 的 unique 任务保持 ENQUEUED，以及不存在 name 不改变现有状态。
+
+当前默认私有版本预留为 `4.0.8-cpf.3-android.3`，同步上述四个默认坐标，未执行发布；
+此前已验收的 56 个制品必须保持摘要不变。App 尚未切换到 fork，SDK、依赖与 iOS preview 逻辑未改。
+完整 core JVM 生产及测试源码编译、Android 生产与 Host 编译、五个定向 Host 类、ABI 检查、
+旧制品摘要及 App Tier 1 已通过，实际结果见下文。
+Native 编译、Mac/Apple 宿主和系统后台/前台行为均未验收，不据此声明通过。
+
+### C2b 实际门禁
+
+core JVM 生产与原测试源码、完整 Android/Host 编译和五类定向测试 exit 0（20 秒，25 tasks 中 11 executed、14 UP-TO-DATE）。报告合计 44 项，43 项运行通过、1 项沿用上游 contentUriTrigger 忽略，零失败/错误；core 测试本批只编译源码，不将其写作完整执行。
+实际 attempt 0/3、旧 context 默认值、同一持续 ID Flow、目标任务链按唯一名称取消而同名 tag 的无关任务存活均通过；C1/C2 回归保持。App `aiVerifyTier1` exit 0（6 秒，30 tasks 中 2 executed、28 UP-TO-DATE），56 个旧制品摘要保持。新 `.3-android.3` 尚未发布；Native、其他平台真实 attempt 和系统调度仍未验收。

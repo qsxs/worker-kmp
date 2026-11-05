@@ -30,6 +30,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import kotlin.uuid.Uuid
 import io.github.mobilebytelabs.worker.workDataOf as kmpWorkDataOf
@@ -231,8 +232,33 @@ class KmpAndroidWorkerTest {
         assertTrue(activeBridgeWorkers().isEmpty())
     }
 
+    @Test
+    fun doWork_passesNativeRunAttemptCountToActualFactoryContext() = runTest {
+        listOf(0, 3).forEach { attempt ->
+            var factoryContext: WorkerContext? = null
+            val worker = testWorker(
+                runAttemptCount = attempt,
+                onContextCreated = { factoryContext = it },
+            ) { context ->
+                assertSame(factoryContext, context)
+                assertEquals(attempt, context.runAttemptCount)
+                WorkResult.success()
+            }
+            assertEquals(attempt, worker.runAttemptCount)
+
+            assertIs<ListenableWorker.Result.Success>(worker.doWork())
+
+            val context = assertIs<AndroidWorkerContext>(factoryContext)
+            assertEquals(worker.id, context.id.nativeId())
+            assertEquals(worker.runAttemptCount, context.runAttemptCount)
+            assertTrue(activeBridgeWorkers().isEmpty())
+        }
+    }
+
     private fun testWorker(
         updater: ProgressUpdater? = null,
+        runAttemptCount: Int = 0,
+        onContextCreated: (WorkerContext) -> Unit = {},
         execute: suspend (WorkerContext) -> WorkResult,
     ): KmpAndroidWorker = TestListenableWorkerBuilder<KmpAndroidWorker>(
         fixture.context,
@@ -241,12 +267,14 @@ class KmpAndroidWorkerTest {
             KEY_KMP_ID to "metadata-id",
             "kmp_business" to "allowed",
         ),
-    ).setWorkerFactory(
+    ).setRunAttemptCount(runAttemptCount).setWorkerFactory(
         KmpWorkerFactory(object : KmpAndroidWorkerFactory {
-            override fun create(workerClass: String, context: WorkerContext): CoroutineWorker =
-                object : CoroutineWorker(context) {
+            override fun create(workerClass: String, context: WorkerContext): CoroutineWorker {
+                onContextCreated(context)
+                return object : CoroutineWorker(context) {
                     override suspend fun doWork(): WorkResult = execute(context)
                 }
+            }
         }),
     ).apply { updater?.let { setProgressUpdater(it) } }.build()
 
