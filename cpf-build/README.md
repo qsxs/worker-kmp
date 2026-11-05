@@ -537,10 +537,15 @@ Core16 与 Android119 合计135项报告，134项运行通过、1项沿用上游
 原生输出等于 `Data.EMPTY` 且键值表为空；非空 payload 与旧 message 用例及断言保持。
 本批不新增公开 API 或 ABI，core 结果模型与 App SDK、依赖、运行路径保持。
 
-默认四坐标预留为 `4.0.8-cpf.3-android.7`，尚未发布。编译、定向回归、旧制品摘要
+D0b 源码提交时预留四坐标 `4.0.8-cpf.3-android.7`，后续发布见 D0bp。编译、定向回归、旧制品摘要
 与 App Tier 1 已完成，真实记录见下文；不据此宣称设备或 Native/iOS 验收。
 
 ### D0b 实际门禁
 
 Core16项有效缓存报告、Android120项报告（含新增默认Failure为空）共136项，零失败/错误，1项沿用上游contentUriTrigger忽略。Android相关回归本次实际执行，Core runtime为UP-TO-DATE，生产与完整测试源码编译通过；门禁exit0（44秒，26tasks中10executed、16UP-TO-DATE）。payload优先/用户error保留与非空legacy message既有断言不变，未引入哨兵metadata或Facade重复映射。
-120个唯一旧制品摘要保持，App Tier1 exit0（5秒，32tasks中3executed、29UP-TO-DATE）。新`.3-android.7`尚未发布，App SDK/业务未切换，Native/iOS及设备服务未据此通过。
+120个唯一旧制品摘要保持，App Tier1 exit0（5秒，32tasks中3executed、29UP-TO-DATE）。D0b源码提交时新`.3-android.7`尚未发布，后续见D0bp；App SDK/业务未切换，Native/iOS及设备服务未据此通过。
+
+## D0bp 默认空失败制品消费
+
+`.3-android.7`四坐标同版本地发布exit0（3秒，44tasks中24executed、20UP-TO-DATE），16新制品与旧120个唯一摘要保持，变更Worker源码字节匹配，core生产Jar/sources测试隔离通过。
+独立AGP9.1/Gradle9.5 consumer从根GAV元数据检查、Kotlin编译、组装exit0（8秒，36tasks中4executed、32UP-TO-DATE），compile/runtime同版闭包通过；probe未改，行为依据D0b真实Worker结果测试，不宣称consumerAPK运行、设备或Native服务已验。App SDK与实际备份路径尚未切换，未推送。
