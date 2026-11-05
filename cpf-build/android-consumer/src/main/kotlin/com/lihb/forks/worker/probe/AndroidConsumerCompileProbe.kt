@@ -39,6 +39,9 @@ internal object AndroidConsumerCompileProbe {
     fun promotionReference(): (ForegroundWorker, ForegroundInfo) -> CompletableFuture<Void> =
         AndroidForegroundBridge::promote
 
+    // 仅检查初始前台信息接口的类型；本方法不执行。
+    suspend fun initialForegroundInfo(worker: ForegroundWorker): ForegroundInfo = worker.getForegroundInfo()
+
     fun coreContract(manager: AndroidWorkManager): WorkManager = manager
 
     fun coreData(data: WorkData): WorkData = data

@@ -478,7 +478,7 @@ service type 和 customizer 行为。provider 不注册 bridge；仅 `doWork` �
 SDK ≥ 31 的 expedited guard 继续保留，低 SDK expedited 调度顺序属于 C3b2，尚未验收；
 Host 测试不能证明设备前台服务行为，Native/iOS 同样未验收。
 
-默认四坐标预留 `4.0.8-cpf.3-android.5`，尚未发布；新增 open suspend 方法属于公开 ABI
+C3b1 源码提交时预留四坐标 `4.0.8-cpf.3-android.5`，实际发布见 C3b1p；新增 open suspend 方法属于公开 ABI
 增量，须成组发布配套 core / Android，并以实际制品消费核对，不承诺所有旧二进制兼容。
 App SDK、依赖和 iOS preview 版本逻辑保持。
 
@@ -486,4 +486,9 @@ App SDK、依赖和 iOS preview 版本逻辑保持。
 
 Core 四类 16 项、Android 八类 102 项报告合计 118 项，117 项运行通过、1 项沿用上游 contentUriTrigger 忽略，零失败/错误；新 native provider 类 30 项含 SDK24/30/31 的工厂捕获、同 delegate/context、失败无注册和通知映射合同。生产与全部测试源码编译通过，门禁 exit 0（41 秒，26 tasks 中 12 executed、14 UP-TO-DATE）。
 实际 javap 确认 core 非抽象 suspend getForegroundInfo、Android override、原 public(Context,WorkerParameters) 构造器和新增注入构造方法描述符；Kotlin internal 注入入口及公开默认实现只按本批源码/ABI记录，不泛称旧二进制兼容。88 个旧制品摘要保持，生产 core JAR 没有测试类或反射 fake。App Tier1 exit 0（4 秒，32 tasks 中 3 executed、29 UP-TO-DATE）。
-`.3-android.5` 尚未发布；SDK guard 未变，低版本原生 expedited 排队、设备前台服务和 Native/iOS 均未据此通过。资源所有权配对测试不宣称真实 SDK 代际竞争复现。
+C3b1 源码提交时 `.3-android.5` 尚未发布，后续见 C3b1p；SDK guard 未变，低版本原生 expedited 排队、设备前台服务和 Native/iOS 均未据此通过。资源所有权配对测试不宣称真实 SDK 代际竞争复现。
+
+## C3b1p Provider 的外部制品消费
+
+`.3-android.5` 四坐标同版本地发布 exit 0（3 秒，44 tasks 中 25 executed、19 UP-TO-DATE）；16 新制品及旧 88 个摘要通过。实际 core JAR javap 确认 provider 非抽象默认实现，AAR 确认原 public 双参构造器与原生 getForegroundInfo override；变更 core/common 与 Android 工厂/桥/worker 源码字节匹配，core Jar/sources 不含测试 fake 或 provider 测试。
+独立 AGP9.1 / Gradle9.5 consumer 对公开 suspend provider 的仅编译引用与旧引用均通过，从新根 GAV 编译/组装 exit 0（7 秒，36 tasks 中 7 executed、29 UP-TO-DATE），compile/runtime 同版闭包通过。未调用 provider、构造调度或安装包；SDK guard 保留，实际低 SDK expedited 与系统服务须待后续 C3b2/设备验收，Native/iOS 未因此通过。
