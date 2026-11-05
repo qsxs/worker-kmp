@@ -404,7 +404,7 @@ Android context；同一持续 ID Flow collector 通过 rendezvous channel 依�
 unique name 用例构建 KEEP 与两次 APPEND 的真实任务链，检查忽略的 KEEP 未插入、
 整链取消、另一条故意携带同名 tag 的 unique 任务保持 ENQUEUED，以及不存在 name 不改变现有状态。
 
-当前默认私有版本预留为 `4.0.8-cpf.3-android.3`，同步上述四个默认坐标，未执行发布；
+C2b 源码提交时预留私有版本 `4.0.8-cpf.3-android.3`，同步上述四个默认坐标；发布结果见 C2bp：
 此前已验收的 56 个制品必须保持摘要不变。App 尚未切换到 fork，SDK、依赖与 iOS preview 逻辑未改。
 完整 core JVM 生产及测试源码编译、Android 生产与 Host 编译、五个定向 Host 类、ABI 检查、
 旧制品摘要及 App Tier 1 已通过，实际结果见下文。
@@ -413,4 +413,10 @@ Native 编译、Mac/Apple 宿主和系统后台/前台行为均未验收，不�
 ### C2b 实际门禁
 
 core JVM 生产与原测试源码、完整 Android/Host 编译和五类定向测试 exit 0（20 秒，25 tasks 中 11 executed、14 UP-TO-DATE）。报告合计 44 项，43 项运行通过、1 项沿用上游 contentUriTrigger 忽略，零失败/错误；core 测试本批只编译源码，不将其写作完整执行。
-实际 attempt 0/3、旧 context 默认值、同一持续 ID Flow、目标任务链按唯一名称取消而同名 tag 的无关任务存活均通过；C1/C2 回归保持。App `aiVerifyTier1` exit 0（6 秒，30 tasks 中 2 executed、28 UP-TO-DATE），56 个旧制品摘要保持。新 `.3-android.3` 尚未发布；Native、其他平台真实 attempt 和系统调度仍未验收。
+实际 attempt 0/3、旧 context 默认值、同一持续 ID Flow、目标任务链按唯一名称取消而同名 tag 的无关任务存活均通过；C1/C2 回归保持。App `aiVerifyTier1` exit 0（6 秒，30 tasks 中 2 executed、28 UP-TO-DATE），56 个旧制品摘要保持。C2b 源码提交时新 `.3-android.3` 尚未发布，后续结果见 C2bp；Native、其他平台真实 attempt 和系统调度仍未验收。
+
+## C2bp 公开增量的实际制品消费
+
+`4.0.8-cpf.3-android.3` 四坐标同版本地发布 exit 0（2 秒，44 tasks 中 25 executed、19 UP-TO-DATE），16 个新制品及既有 56 个制品摘要通过核对。Android 完整类和四份叶源码保持，实际 JVM core JAR 的 javap 确认 `public default int getRunAttemptCount()`，其 JVM sources.jar 与本批 core 源码字节一致。
+独立消费探针保留全部旧 API 引用，并增加 getter、按 ID Flow、suspend unique 取消三个仅类型检查引用；没有构造管理器或执行方法。AGP 9.1 / Gradle 9.5 的真实根 GAV 消费元数据、Kotlin 编译和组装 exit 0（9 秒，36 tasks 中 7 executed、29 UP-TO-DATE），compile/runtime 闭包同版且无上游 worker 重复。
+这项验收证明新公开 Kotlin API 可由外部制品编译使用及 JVM 默认 getter 形态，不扩大为所有旧二进制兼容、Native/iOS、设备或系统调度保证。App SDK/依赖和运行路径保持，未安装消费包或推送远端。

@@ -7,19 +7,30 @@ package com.lihb.forks.worker.probe
 
 import android.content.Context
 import io.github.mobilebytelabs.worker.WorkData
+import io.github.mobilebytelabs.worker.WorkInfo
 import io.github.mobilebytelabs.worker.WorkManager
 import io.github.mobilebytelabs.worker.WorkManagerFactory
+import io.github.mobilebytelabs.worker.WorkerContext
 import io.github.mobilebytelabs.worker.android.AndroidForegroundBridge
 import io.github.mobilebytelabs.worker.android.AndroidWorkManager
 import io.github.mobilebytelabs.worker.android.WorkerKmpComposeActivity
 import io.github.mobilebytelabs.worker.android.WorkerKmpStarterApplication
 import io.github.mobilebytelabs.worker.android.androidWorkManagerFactory
+import kotlinx.coroutines.flow.Flow
 import org.koin.core.module.Module
+import kotlin.uuid.Uuid
 
 // 只进行类型检查；不构造 WorkManager、不调用 factory，也不触发初始化或调度。
 internal object AndroidConsumerCompileProbe {
     val workManagerType: Class<AndroidWorkManager> = AndroidWorkManager::class.java
     val factoryReference: (Context) -> WorkManagerFactory = ::androidWorkManagerFactory
+
+    // 仅通过方法引用检查新 API 的类型，不调用接口或创建实例。
+    val runAttemptCountReference: (WorkerContext) -> Int = WorkerContext::runAttemptCount
+    val workInfoByIdFlowReference: (AndroidWorkManager, Uuid) -> Flow<WorkInfo?> =
+        AndroidWorkManager::getWorkInfoByIdFlow
+    val cancelUniqueWorkReference: suspend (AndroidWorkManager, String) -> Unit =
+        AndroidWorkManager::cancelUniqueWork
 
     fun coreContract(manager: AndroidWorkManager): WorkManager = manager
 
