@@ -359,9 +359,9 @@ Android Data 转换统一由原生 `Data.Builder.putAll(...).build()` 校验支�
 Success 与非空 Failure 输出使用统一转换，完整保留 Failure 业务载荷（包括用户 `error` 字段）；
 只有 Failure 输出为空时保留既有 message → `error` 兼容行为，未增加 core 或 facade API。
 
-默认私有版本预留为 `4.0.8-cpf.3-android.2`，避免覆盖 C1p 已发布的 `.3-android.1`。
+C2 源码提交时预留私有版本 `4.0.8-cpf.3-android.2`，避免覆盖 C1p 已发布的 `.3-android.1`。
 完整生产/host 编译、五类定向 host 测试、旧制品摘要与 App Tier 1 已完成，实际结果见下文；
-新版本发布与实际 consumer 验收另行进行。
+新版本发布与实际 consumer 验收结果见后续 C2p 节。
 App、SDK、依赖与 iOS preview 逻辑未改动，未据此声明设备或系统调度行为通过。
 
 C2 的 10KB 验证按本批实际测试的常规可序列化输入记录。源码复核另观察到 WorkManager 2.11.2 的原生序列化捕获 IOException 后可能返回空字节；例如单个字符串超出 modified-UTF 长度上限属于原生边界，本批未运行该极端场景，也不承诺它必然在入队前抛错。该行为沿用既有 SDK，不新增项目编码层或额外生产守卫，未将其列为产品需求或本批通过项。
@@ -369,4 +369,10 @@ C2 的 10KB 验证按本批实际测试的常规可序列化输入记录。源�
 ### C2 实际门禁
 
 完整生产与 Host 源集编译通过；五个完整类过滤（WorkConvertersTest、AndroidWorkManagerTest、KmpAndroidWorkerTest、AndroidWorkManagerIntegrationTest、AndroidWorkerContextTest）的门禁 exit 0，16 秒，24 tasks 中 4 executed、20 UP-TO-DATE。报告合计 40 项，39 项运行通过、1 项沿用上游 contentUriTrigger 忽略，零失败/错误。类型/序列化矩阵、真实 Worker 调用与注入 ProgressUpdater 的等待契约、Success/Failure 输出、入队前冲突与大小限制均有定向断言；未将此夹具作为 SDK WorkProgressUpdater 实际落库验收，C1 连续 UPDATE/KEEP/旧任务用例保持。
-首轮仅测试编译遇到数组/Class 泛型推断和内部 Room 类型依赖问题；只修测试类型表达及公开查询，未增加依赖或弱化断言，四个生产文件摘要修前修后保持。根 App `aiVerifyTier1` exit 0（6 秒，30 tasks 中 2 executed、28 UP-TO-DATE）。已接受的 `.1/.2` 与 C1p 共 40 个制品摘要保持；`.3-android.2` 尚未发布，App 尚未切换。
+首轮仅测试编译遇到数组/Class 泛型推断和内部 Room 类型依赖问题；只修测试类型表达及公开查询，未增加依赖或弱化断言，四个生产文件摘要修前修后保持。根 App `aiVerifyTier1` exit 0（6 秒，30 tasks 中 2 executed、28 UP-TO-DATE）。已接受的 `.1/.2` 与 C1p 共 40 个制品摘要保持；C2 源码提交时尚未发布，后续发布见 C2p，App 尚未切换。
+
+## C2p 新私有版本发布与消费
+
+已将 C2 提交 `d264cbf` 对应的 `4.0.8-cpf.3-android.2` 成组发布到本地文件仓库，发布 exit 0（2 秒，44 tasks 中 24 executed、20 UP-TO-DATE）。四个私有坐标同版，16 个新制品摘要已登记；此前已验收的 40 个制品摘要保持，未覆盖旧版本或写外部仓库。
+独立 AGP 9.1 / Gradle 9.5 / Kotlin 2.4.20 / JVM 17 消费工程仅声明 Android 根 GAV，实际元数据检查、Kotlin 编译与 APK 组装 exit 0（10 秒，36 tasks 中 5 executed、31 UP-TO-DATE）。compile/runtime 两份依赖图均验证同版私有 core 闭包，没有上游 worker 重复依赖或 project/composite/mavenLocal/直接 AAR 绕过。
+AAR 中完整 launcher/customizer、Context 和相关实现均保留，class major 55；Android 叶 sources.jar 与 C2 的四份生产源码字节一致，GMM 根叶关系及 POM 依赖通过检查。验证仍不包含 APK 安装、SDK 进度落库、系统后台/前台服务、Native 或 iOS；App 尚未切换私有 fork，原有 SDK 与业务行为保持。
