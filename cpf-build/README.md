@@ -514,10 +514,15 @@ C3b1 源码提交时 `.3-android.5` 尚未发布，后续见 C3b1p；SDK guard �
 未引入 Room、MockK、新依赖或生产 hook。字段或源码契约变化应视为夹具阻塞并重新核实，
 不能扩大生产接口。Host 结果不证明设备前台服务、通知实际投递、Native 或 iOS 行为。
 
-四个默认坐标预留 `4.0.8-cpf.3-android.6`；编译、定向回归、旧制品摘要与 App Tier 1 已通过，
-结果见下文，尚未发布新版本。设备服务或 Native/iOS 未验收，既有 `.3-android.5` 及更早制品不覆盖。
+C3b2 源码提交时预留四坐标 `4.0.8-cpf.3-android.6`；编译、定向回归、旧制品摘要与 App Tier 1 已通过，
+结果见下文，后续发布见 C3b2p。设备服务或 Native/iOS 未验收，既有 `.3-android.5` 及更早制品不覆盖。
 
 ### C3b2 实际门禁
 
 Core16 与 Android119 合计135项报告，134项运行通过、1项沿用上游contentUriTrigger忽略，零失败/错误。新增真实原生 expedited 类17项覆盖API24/30预启动顺序与API31差异、真实标志/两种policy、成功前门控、失败/取消和资源清理；updater自身取消按原生语义进入失败且业务不启动，显式用户取消等待/业务则分别检查原生取消及桥注销，不混写取消语义。
-生产与完整测试源码编译通过，门禁 exit 0（48秒，26tasks中12executed、14UP-TO-DATE）。App Tier1 exit 0（5秒，32tasks中3executed、29UP-TO-DATE）。104个已接受制品摘要保持；统计时重复登记同一份`.5`报告导致数量断言，已去重索引并重新核对全部摘要，未改制品/源码或重跑已通过测试。`.6`尚未发布；这些是Robolectric内真实WorkManager流程与固定SDK私有字段夹具，不替代设备ForegroundService或Native/iOS验收。
+生产与完整测试源码编译通过，门禁 exit 0（48秒，26tasks中12executed、14UP-TO-DATE）。App Tier1 exit 0（5秒，32tasks中3executed、29UP-TO-DATE）。104个已接受制品摘要保持；统计时重复登记同一份`.5`报告导致数量断言，已去重索引并重新核对全部摘要，未改制品/源码或重跑已通过测试。C3b2源码提交时`.6`尚未发布，后续见C3b2p；这些是Robolectric内真实WorkManager流程与固定SDK私有字段夹具，不替代设备ForegroundService或Native/iOS验收。
+
+## C3b2p 低 SDK expedited 变更制品消费
+
+`.3-android.6` 四坐标同版本地发布 exit 0（2秒，44tasks中25executed、19UP-TO-DATE），16新制品、104个唯一旧制品摘要保持；生产core Jar/sources无测试fake，变更Android manager与core请求KDoc的发布源码字节匹配。
+独立AGP9.1/Gradle9.5 consumer从新根GAV元数据检查、Kotlin编译、APK组装exit0（11秒，36tasks中5executed、31UP-TO-DATE），compile/runtime闭包同版，无project/composite/mavenLocal/directAAR绕过。沿用既有编译探针，无新增运行入口。低SDK行为依据C3b2真实WM的17项新用例，消费APK未安装运行；App未切换，实际设备前台服务、Native/iOS仍待验。
