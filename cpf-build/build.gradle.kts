@@ -1,5 +1,6 @@
 import org.gradle.api.publish.maven.MavenPublication
 import org.gradle.api.publish.maven.tasks.PublishToMavenLocal
+import org.gradle.api.publish.maven.tasks.PublishToMavenRepository
 import org.gradle.api.tasks.compile.JavaCompile
 import org.jetbrains.kotlin.gradle.ExperimentalKotlinGradlePluginApi
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
@@ -10,7 +11,11 @@ plugins {
 }
 
 group = providers.gradleProperty("cpf.group").get()
-version = providers.gradleProperty("cpf.version").get()
+
+val enableIos = providers.gradleProperty("cpf.enableIos").orNull == "true"
+
+// iOS 预览使用独立版本，不能覆盖已验收的默认 JVM / Android 产物。
+version = if (enableIos) "4.0.8-cpf.3-ios-preview.1" else providers.gradleProperty("cpf.version").get()
 
 require(group.toString() != "io.github.mobilebytelabs") {
     "CPF publications must use a private group."
@@ -25,6 +30,17 @@ kotlin {
     jvm {
         compilerOptions {
             jvmTarget.set(JvmTarget.JVM_11)
+        }
+    }
+
+    if (enableIos) {
+        iosArm64()
+        iosSimulatorArm64()
+        applyHierarchyTemplate {
+            common {
+                withJvm()
+                group("ios") { withIos() }
+            }
         }
     }
 
@@ -46,6 +62,16 @@ kotlin {
         jvmMain {
             kotlin.setSrcDirs(listOf(upstreamSources.dir("jvmMain/kotlin")))
             resources.setSrcDirs(listOf(upstreamSources.dir("jvmMain/resources")))
+        }
+        if (enableIos) {
+            named("iosMain") {
+                kotlin.setSrcDirs(listOf(upstreamSources.dir("iosMain/kotlin")))
+                resources.setSrcDirs(listOf(upstreamSources.dir("iosMain/resources")))
+            }
+            named("iosTest") {
+                kotlin.setSrcDirs(listOf(upstreamSources.dir("iosTest/kotlin")))
+                resources.setSrcDirs(listOf(upstreamSources.dir("iosTest/resources")))
+            }
         }
         commonTest {
             kotlin.setSrcDirs(listOf(upstreamSources.dir("commonTest/kotlin")))
@@ -75,12 +101,14 @@ publishing {
             when (name) {
                 "kotlinMultiplatform" -> "worker-kmp"
                 "jvm" -> "worker-kmp-jvm"
+                "iosArm64" -> "worker-kmp-iosarm64"
+                "iosSimulatorArm64" -> "worker-kmp-iossimulatorarm64"
                 else -> error("Unsupported CPF publication: $name")
             }
 
         pom {
             name.set("worker-kmp (CPF core fork)")
-            description.set("Private core fork of worker-kmp: common metadata and JVM target")
+            description.set("Private core fork of worker-kmp with JVM and optional iOS targets")
             url.set("https://github.com/MobileByteLabs/worker-kmp")
             inceptionYear.set("2026")
             licenses {
@@ -121,4 +149,55 @@ publishing {
 // 私有产物只写入本入口文件仓库，避免进入用户共享的 Maven Local。
 tasks.withType<PublishToMavenLocal>().configureEach {
     enabled = false
+}
+
+if (enableIos) {
+    val verifyIosPublicationHost =
+        tasks.register("verifyCpfIosPublicationHost") {
+            group = "publishing"
+            description = "Rejects iOS preview publication on hosts without Apple target support."
+            doLast {
+                check(System.getProperty("os.name").startsWith("Mac", ignoreCase = true)) {
+                    "CPF iOS preview publication requires macOS and complete Native artifacts."
+                }
+            }
+        }
+    allprojects {
+        plugins.withId("maven-publish") {
+            tasks.withType<PublishToMavenRepository>().configureEach {
+                dependsOn(verifyIosPublicationHost)
+                if (project != rootProject) {
+                    dependsOn(":publishKotlinMultiplatformPublicationToCpfRepository")
+                }
+            }
+        }
+    }
+
+    val repositoryDirectory =
+        layout.buildDirectory
+            .dir("repository")
+            .get()
+            .asFile
+    val modulePath = group.toString().replace('.', '/')
+    val publicationVersion = version.toString()
+    tasks.matching { it.name == "publishKotlinMultiplatformPublicationToCpfRepository" }.configureEach {
+        dependsOn(
+            "publishJvmPublicationToCpfRepository",
+            "publishIosArm64PublicationToCpfRepository",
+            "publishIosSimulatorArm64PublicationToCpfRepository",
+        )
+        doFirst {
+            // 即使调用方排除了叶子任务，也不能发布指向缺失 Native 制品的根 metadata。
+            listOf("iosarm64", "iossimulatorarm64").forEach { target ->
+                val artifact = "worker-kmp-$target"
+                listOf("klib", "pom", "module").forEach { extension ->
+                    val leaf =
+                        repositoryDirectory.resolve(
+                            "$modulePath/$artifact/$publicationVersion/$artifact-$publicationVersion.$extension",
+                        )
+                    check(leaf.isFile && leaf.length() > 0) { "Missing CPF Native leaf: $leaf" }
+                }
+            }
+        }
+    }
 }

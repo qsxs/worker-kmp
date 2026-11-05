@@ -1,7 +1,7 @@
-# CPF core / Android 独立构建入口
+# CPF core / Android / 可选 iOS 独立构建入口
 
 此目录是 worker-kmp 本地 fork 的独立 Gradle 工程，以 `-p cpf-build` 选择。
-根项目挂接 core 的 JVM 与 common 源集，`:android` 挂接完整 Android 模块；
+默认根项目挂接 core 的 JVM 与 common 源集，`:android` 挂接完整 Android 模块；
 不包含上游根工程的 composite build、样例、Store5 或 KSP，也不向应用增加依赖。
 `android-consumer` 是另一个独立工程，不被此入口 `include`。
 
@@ -103,8 +103,8 @@ Android 坐标按 KMP 的 `kotlinMultiplatform` / `android` publication 分别�
 
 本入口配置 common/JVM/Android 产物，平台重定向与元数据以实际生成内容为准，
 配置本身不能证明 Android、iOS、OHOS、JS 或 Wasm 产物已经发布。
-此环境无 Mac/ARM 验证条件，不能声明这些平台编译或运行通过；iOS / OHOS 等
-producer 属于后续批次，不加入占位实现。
+此环境无 Mac/ARM 验证条件，不能声明这些平台编译或运行通过；iOS producer 的
+可选配置见下文，OHOS 等平台仍属于后续批次，不加入占位实现。
 
 ## A2 已取得的验证结果
 
@@ -168,7 +168,7 @@ targetSdk `36`、JVM `17`；沿用宿主的 AGP 内置 Kotlin 配置，应用 ID
 
 以下记录本批门禁实测结果，更新前述待执行状态；验收范围仅为 Android producer / consumer ABI。
 
-- producer 使用 wrapper `9.7.1` / JDK `21` / AGP `9.4.0`；`:android:compileAndroidMain` 与 `:android:bundleAar` 退出码 `0`，约 `21s`。
+- producer 使用 wrapper `9.7.1` / JDK `21` / AGP `9.4.0`；`:android:compileAndroidMain` 与 `:android:bundleAndroidMainAar` 退出码 `0`，约 `21s`。
 - AAR 为 `66112` bytes、`37` 个 class；两个 launcher 与 `notificationCustomizer` 均存在，字节码 major 为 `55`（Java 11）。
 - 实际 AAR metadata 为 `minCompileSdk=37`、`minAndroidGradlePluginVersion=1.0.0`，未伪造或修改 metadata。
 - 实际 Manifest 仅声明 minSdk `24`，未新增自动初始化或 launcher 入口。
@@ -181,3 +181,80 @@ targetSdk `36`、JVM `17`；沿用宿主的 AGP 内置 Kotlin 配置，应用 ID
 - 根 App 新执行的 `aiVerifyTier1` 退出码 `0`，约 `4s`；App 的实际 SDK 依赖与业务源码未改动。
 - 主控仅对指定 `8` 个路径执行实际支持的 `spotlessIdeHook`，退出码 `0`，约 `53s`，无白名单外改动。
 - 未完成 iOS / OHOS 运行验收；本批通过不代表全平台或全部调度、前台通知语义已修复。
+
+## A3b 可选 iOS producer（待主控验证）
+
+仅传入 `-Pcpf.enableIos=true` 才包含 `:ios`，并为 core 增加 `iosArm64` 与
+`iosSimulatorArm64`；未传参数的目标、源码输入和默认 `4.0.8-cpf.2` 版本不变。
+此参数不引入上游根工程、样例或发布插件，也不修改应用、SDK 或生产 API。
+保留 catalog 的 Kotlin `2.4.20`、CMP `1.12.0`、Koin `4.2.2`，不降级工具链。
+
+| 工程 / 源集 | 上游物理目录（相对于 fork 根目录） |
+| --- | --- |
+| core / iosMain | `cmp-worker-kmp/src/iosMain/kotlin`（全部 4 文件） |
+| core / iosTest | `cmp-worker-kmp/src/iosTest/kotlin` |
+| :ios / commonMain | `cmp-worker-ios/src/commonMain/kotlin` 与 `cmp-worker-ios/src/iosMain/kotlin`（全部 10 个现有生产文件） |
+| :ios / commonTest | `cmp-worker-ios/src/commonTest/kotlin` 与 `cmp-worker-ios/src/iosTest/kotlin` |
+
+所有表列目录的同级 `resources` 也作为输入；不存在的目录不生成占位文件。
+core 使用 `common → ios → 两个 iOS 目标` 与 `common → JVM` 的显式层级，
+保留原 `expect` 对应的真实 iOS `actual`，不添加空实现。
+`:ios` 只有两个 iOS 目标，采用 `common → 两个 iOS 目标`，将原 commonMain /
+iosMain 物理目录合并为模块的 commonMain 输入，避免目标集合相同的冗余中间源集。
+这里的 commonMain 只服务 iOS，不会把 UIKit / Foundation 源码接入 JVM 或 Android。
+测试目录仅保留源码接线，不代表本批获准或已经执行测试。
+
+`:ios` 通过 `api(project(":"))` 依赖同组 core，保留全部持久化、调度、配置和启动器源码。
+coroutines 保持上游 implementation；Compose Runtime / UI 与 Koin Core 用 `api`
+暴露启动器公开签名所需类型。两个 target 均保留上游 `WorkerKmpIos` static framework，
+未增加 framework export、宿主项目、Info.plist 或 Xcode 签名配置。
+
+### Windows 配置边界
+
+主控可从 fork 根目录使用当前进程 JDK 21 发现配置后的任务：
+
+```powershell
+& .\gradlew.bat -p cpf-build '-Pcpf.enableIos=true' tasks --all --console=plain
+```
+
+预期出现 core / `:ios` 的 `compileKotlinIosArm64`、`compileKotlinIosSimulatorArm64`，
+以及 `:ios:linkDebugFrameworkIosArm64` / `:ios:linkDebugFrameworkIosSimulatorArm64`。
+这些名称仍须由真实任务列表确认；配置成功或任务可见不代表 Native 编译成功。
+Windows 不执行 iOS Native 编译、framework 链接、宿主构建、模拟器或设备运行。
+
+### Preview 坐标与发布完整性
+
+启用 iOS 时，全工程固定使用新版本 `4.0.8-cpf.3-ios-preview.1`，覆盖默认
+`cpf.version` 的读取；Android 也跟随 root 使用该 preview 版本，因此依赖组内一致。
+默认模式仍读取原 `cpf.version=4.0.8-cpf.2`，不写入或覆盖已验收的 `.2` 制品。
+新增坐标与现有 core / JVM / Android 坐标使用同一私有组：
+
+- core Native 叶：`worker-kmp-iosarm64`、`worker-kmp-iossimulatorarm64`。
+- iOS KMP 根：`worker-ios`。
+- iOS Native 叶：`worker-ios-iosarm64`、`worker-ios-iossimulatorarm64`。
+
+文件仓库仍为 `cpf-build/build/repository`，不配置远端或 Maven Local。
+opt-in 后所有工程的仓库发布任务均依赖 `verifyCpfIosPublicationHost`，非 macOS
+显式失败，避免 Windows 将缺少 Native 叶的根 metadata 发布成可消费版本。
+core 根发布先发布 JVM 与两个 Native 叶；`:ios` 根发布先发布自身两个 Native 叶。
+两个根发布还检查 Native 叶的 `.klib` / POM / GMM 确实存在且非空；Android / iOS 的所有发布均先完成
+同版本 core 根发布，防止 adapter 指向未发布的 preview core。
+
+以下为 macOS 后续验收入口示例，须先完成任务发现，并由主控决定执行；不是本批结果：
+
+```bash
+./gradlew -p cpf-build -Pcpf.enableIos=true compileKotlinIosArm64 compileKotlinIosSimulatorArm64 :ios:compileKotlinIosArm64 :ios:compileKotlinIosSimulatorArm64 --console=plain
+./gradlew -p cpf-build -Pcpf.enableIos=true :ios:linkDebugFrameworkIosArm64 :ios:linkDebugFrameworkIosSimulatorArm64 --console=plain
+./gradlew -p cpf-build -Pcpf.enableIos=true publishAllPublicationsToCpfRepository :android:publishAllPublicationsToCpfRepository :ios:publishAllPublicationsToCpfRepository --console=plain
+```
+
+macOS 仍须具备上游平台 API 所需 Apple SDK / Xcode，核验两个 Native 叶、全部 POM /
+GMM 私有依赖和 framework 的实际内容；发布任务不能代替 Native 编译和宿主验证。
+本批 implementer 未运行构建、任务发现、发布、Native 或 Host 门禁；具体结果由主控记录。
+
+### A3b 实际门禁（2026-11-05）
+
+- Windows 使用加引号的 `-Pcpf.enableIos=true` 完成 opt-in 任务发现（exit 0，11 秒）；首次未加引号被 PowerShell 拆参，已修正文档命令。
+- 默认 Android producer 编译及完整 `:android:bundleAndroidMainAar` 通过（1 秒，20 tasks 中 18 UP-TO-DATE）；AGP 9.1 消费编译及组装通过（2 秒，36 tasks 全部 UP-TO-DATE）。本次主要复用缓存。
+- 非 Mac 发布检查按预期明确拒绝（该负向检查 exit 1，匹配专属错误）；三模块发布 dry-run exit 0，仅证明任务依赖图可构造。未执行 Native 编译或发布。
+- 已验收 `.2` 的 16 个制品 SHA-256 全部保持。iOS Native 编译、framework 链接、Swift Host 和运行验收仍等待 Mac/Xcode。

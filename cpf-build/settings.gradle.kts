@@ -19,7 +19,11 @@ dependencyResolutionManagement {
     }
 }
 
-// 独立工程只包含 core 与 Android producer，不引入上游根工程或 build-logic。
+// 默认只包含 core 与 Android；iOS 必须显式启用，不引入上游根工程或 build-logic。
 rootProject.name = "worker-kmp"
 
 include(":android")
+
+if (providers.gradleProperty("cpf.enableIos").orNull == "true") {
+    include(":ios")
+}
