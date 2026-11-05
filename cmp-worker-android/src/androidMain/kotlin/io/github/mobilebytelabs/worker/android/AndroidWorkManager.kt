@@ -1,7 +1,6 @@
 package io.github.mobilebytelabs.worker.android
 
 import android.content.Context
-import android.os.Build
 import androidx.work.OneTimeWorkRequest
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequest
@@ -101,14 +100,7 @@ class AndroidWorkManager(context: Context) : WorkManager {
             builder.setInitialDelay(initialDelay.inWholeMilliseconds, TimeUnit.MILLISECONDS)
         }
         expeditedPolicy?.let { policy ->
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                builder.setExpedited(policy.toAndroid())
-            } else {
-                Logger.withTag("worker-kmp.android").d {
-                    "setExpedited() requested but SDK_INT=${Build.VERSION.SDK_INT} < 31 (Android 12). " +
-                        "Request will run as ordinary background work."
-                }
-            }
+            builder.setExpedited(policy.toAndroid())
         }
         return builder.build()
     }

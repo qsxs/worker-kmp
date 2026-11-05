@@ -87,10 +87,10 @@ Android KMP library、Compose Multiplatform、Compose compiler 插件，不使�
 
 坐标由本目录 `gradle.properties` 的 `cpf.group`、`cpf.version` 提供，默认值为：
 
-- core KMP 根坐标：`com.lihb.forks.worker:worker-kmp:4.0.8-cpf.3-android.5`。
-- core JVM 坐标：`com.lihb.forks.worker:worker-kmp-jvm:4.0.8-cpf.3-android.5`。
-- Android KMP 根坐标：`com.lihb.forks.worker:worker-android:4.0.8-cpf.3-android.5`。
-- Android 目标叶坐标：`com.lihb.forks.worker:worker-android-android:4.0.8-cpf.3-android.5`。
+- core KMP 根坐标：`com.lihb.forks.worker:worker-kmp:4.0.8-cpf.3-android.6`。
+- core JVM 坐标：`com.lihb.forks.worker:worker-kmp-jvm:4.0.8-cpf.3-android.6`。
+- Android KMP 根坐标：`com.lihb.forks.worker:worker-android:4.0.8-cpf.3-android.6`。
+- Android 目标叶坐标：`com.lihb.forks.worker:worker-android-android:4.0.8-cpf.3-android.6`。
 - 文件仓库：`cpf-build/build/repository`，发布仓库名称为 `Cpf`。
 
 Android 坐标按 KMP 的 `kotlinMultiplatform` / `android` publication 分别设置，
@@ -492,3 +492,32 @@ C3b1 源码提交时 `.3-android.5` 尚未发布，后续见 C3b1p；SDK guard �
 
 `.3-android.5` 四坐标同版本地发布 exit 0（3 秒，44 tasks 中 25 executed、19 UP-TO-DATE）；16 新制品及旧 88 个摘要通过。实际 core JAR javap 确认 provider 非抽象默认实现，AAR 确认原 public 双参构造器与原生 getForegroundInfo override；变更 core/common 与 Android 工厂/桥/worker 源码字节匹配，core Jar/sources 不含测试 fake 或 provider 测试。
 独立 AGP9.1 / Gradle9.5 consumer 对公开 suspend provider 的仅编译引用与旧引用均通过，从新根 GAV 编译/组装 exit 0（7 秒，36 tasks 中 7 executed、29 UP-TO-DATE），compile/runtime 同版闭包通过。未调用 provider、构造调度或安装包；SDK guard 保留，实际低 SDK expedited 与系统服务须待后续 C3b2/设备验收，Native/iOS 未因此通过。
+
+## C3b2 所有支持 SDK 的 Android 原生 expedited 委托
+
+`AndroidWorkManager` 对所有支持的 Android SDK 调用原生 `setExpedited`，原样传递两种
+`OutOfQuotaPolicy`；移除 API 31 guard 和低版本普通任务降级。common 请求 KDoc 同步说明
+低于 API 31 时由 WorkManager 获取初始 foreground descriptor 并等待提升，再启动业务。
+原生配额 fallback、约束校验、provider、delegate 和通知转换保持既有实现。
+
+新增 `AndroidExpeditedWorkTest` 使用官方 `WorkManagerTestInitHelper` 内存数据库、真实
+`WorkManager`、`TestDriver` 和 `WorkerWrapper`；只使用原生 expedited 支持的网络约束，
+不加入 charging 或 initialDelay。API 24/30 的实测覆盖 provider → updater → 完成 → 业务
+顺序、单个工厂/delegate/context、provider 与 updater 失败、updater 自取消、真实取消等待
+和业务阶段、业务失败后的 bridge 清理；API 31 覆盖实际标志/两种策略和普通 worker 无 provider
+的执行，另保留非 expedited 普通任务回归。控制通过 Deferred、Channel 和有界 timeout，
+没有 sleep 轮询，也不手动调用 provider 或 doWork 充当原生调度验收。
+
+此夹具明确依赖固定 WorkManager `2.11.2`：工厂只在测试内反射修改 WorkerWrapper 创建的
+原始 `WorkerParameters.mForegroundUpdater`，包装真实 updater，并以受控 Future 延后完成
+或注入故障/取消；反射读取 WorkDatabase/DAO/WorkSpec 只核对真实 expedited 与配额字段，
+未引入 Room、MockK、新依赖或生产 hook。字段或源码契约变化应视为夹具阻塞并重新核实，
+不能扩大生产接口。Host 结果不证明设备前台服务、通知实际投递、Native 或 iOS 行为。
+
+四个默认坐标预留 `4.0.8-cpf.3-android.6`；编译、定向回归、旧制品摘要与 App Tier 1 已通过，
+结果见下文，尚未发布新版本。设备服务或 Native/iOS 未验收，既有 `.3-android.5` 及更早制品不覆盖。
+
+### C3b2 实际门禁
+
+Core16 与 Android119 合计135项报告，134项运行通过、1项沿用上游contentUriTrigger忽略，零失败/错误。新增真实原生 expedited 类17项覆盖API24/30预启动顺序与API31差异、真实标志/两种policy、成功前门控、失败/取消和资源清理；updater自身取消按原生语义进入失败且业务不启动，显式用户取消等待/业务则分别检查原生取消及桥注销，不混写取消语义。
+生产与完整测试源码编译通过，门禁 exit 0（48秒，26tasks中12executed、14UP-TO-DATE）。App Tier1 exit 0（5秒，32tasks中3executed、29UP-TO-DATE）。104个已接受制品摘要保持；统计时重复登记同一份`.5`报告导致数量断言，已去重索引并重新核对全部摘要，未改制品/源码或重跑已通过测试。`.6`尚未发布；这些是Robolectric内真实WorkManager流程与固定SDK私有字段夹具，不替代设备ForegroundService或Native/iOS验收。

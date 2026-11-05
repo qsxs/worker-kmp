@@ -40,9 +40,10 @@ sealed class WorkRequest {
  * @property tags labels for observation and bulk cancellation.
  * @property initialDelay how long to wait before first attempt; defaults to [Duration.ZERO].
  *   Added in v3.0.0-alpha04.X (Phase 7 alpha04.X).
- * @property expeditedPolicy when non-null, requests Android 12+ expedited execution.
- *   [OutOfQuotaPolicy] controls behaviour when the expedited quota is exhausted.
- *   No-op on iOS/Desktop/Web. Added in v3.0.0-alpha04.X (Phase 7 alpha04.X).
+ * @property expeditedPolicy 非空时请求 Android 原生 expedited 执行；低于 API 31 时由
+ *   WorkManager 通过 [ForegroundWorker.getForegroundInfo] 完成启动前前台提升。
+ *   [OutOfQuotaPolicy] 控制原生配额耗尽时的行为；iOS/Desktop/Web 不处理此选项。
+ *   Added in v3.0.0-alpha04.X (Phase 7 alpha04.X).
  */
 @ConsistentCopyVisibility
 data class OneTimeWorkRequest internal constructor(
@@ -136,13 +137,13 @@ class OneTimeWorkRequestBuilder<T : CoroutineWorker>(private val workerClass: St
     fun setInitialDelay(delay: Duration): OneTimeWorkRequestBuilder<T> = apply { initialDelay = delay }
 
     /**
-     * Requests Android 12+ expedited execution. [policy] controls behaviour when the
-     * expedited-work quota is exhausted (see [OutOfQuotaPolicy]).
+     * 请求 Android 原生 expedited 执行；[policy] 原样委托原生配额策略（见 [OutOfQuotaPolicy]）。
      *
      * Per-platform behaviour:
-     * - **Android (API 31+)**: maps to `androidx.work.OneTimeWorkRequest.Builder.setExpedited(...)`.
-     * - **Android (<31)**: no-op (logged at debug level).
-     * - **iOS / Desktop / Web**: no-op (these platforms have no expedited-work concept).
+     * - **Android**：所有支持版本均映射到原生 `OneTimeWorkRequest.Builder.setExpedited(...)`。
+     *   API 31 以下由 WorkManager 获取 [ForegroundWorker.getForegroundInfo]，等待前台提升完成
+     *   后才启动业务；provider 和提升失败沿用原生失败语义，不自行降级。
+     * - **iOS / Desktop / Web**：不处理此选项。
      *
      * Added in v3.0.0-alpha04.X (Phase 7 alpha04.X).
      */
