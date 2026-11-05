@@ -87,10 +87,10 @@ Android KMP library、Compose Multiplatform、Compose compiler 插件，不使�
 
 坐标由本目录 `gradle.properties` 的 `cpf.group`、`cpf.version` 提供，默认值为：
 
-- core KMP 根坐标：`com.lihb.forks.worker:worker-kmp:4.0.8-cpf.2`。
-- core JVM 坐标：`com.lihb.forks.worker:worker-kmp-jvm:4.0.8-cpf.2`。
-- Android KMP 根坐标：`com.lihb.forks.worker:worker-android:4.0.8-cpf.2`。
-- Android 目标叶坐标：`com.lihb.forks.worker:worker-android-android:4.0.8-cpf.2`。
+- core KMP 根坐标：`com.lihb.forks.worker:worker-kmp:4.0.8-cpf.3-android.1`。
+- core JVM 坐标：`com.lihb.forks.worker:worker-kmp-jvm:4.0.8-cpf.3-android.1`。
+- Android KMP 根坐标：`com.lihb.forks.worker:worker-android:4.0.8-cpf.3-android.1`。
+- Android 目标叶坐标：`com.lihb.forks.worker:worker-android-android:4.0.8-cpf.3-android.1`。
 - 文件仓库：`cpf-build/build/repository`，发布仓库名称为 `Cpf`。
 
 Android 坐标按 KMP 的 `kotlinMultiplatform` / `android` publication 分别设置，
@@ -327,10 +327,17 @@ Host / Robolectric 结果不能作为真实设备后台调度、进程生命周�
 限定四类 host 测试、完整生产与 host 编译及根 App Tier 1 已完成，真实结果见下文；
 未执行发布、设备或系统后台/前台验收。
 
-C1 同时将默认私有版本预留为 `4.0.8-cpf.3-android.1`，防止变更后的生产源码通过默认发布命令覆盖已验收 `.2`。本批尚未发布新制品，隔离消费探针默认读取同一私有版本属性，须先发布新制品再验证消费；App 尚未消费该 fork，现有 SDK 与依赖保持。实际发布和同版消费另批验证。iOS opt-in 的 preview 版本逻辑保持。
+C1 同时将默认私有版本预留为 `4.0.8-cpf.3-android.1`，防止变更后的生产源码通过默认发布命令覆盖已验收 `.2`。C1 源码提交时尚未发布新制品，隔离消费探针默认读取同一私有版本属性；实际发布和消费结果见后续 C1p 节。App 尚未消费该 fork，现有 SDK 与依赖保持。iOS opt-in 的 preview 版本逻辑保持。
 
 ### C1 实际门禁（2026-11-05）
 
 `:android:compileAndroidMain :android:compileAndroidHostTest :android:testAndroidHostTest` 加四个完整类过滤（AndroidWorkManagerTest、AndroidWorkManagerIntegrationTest、WorkConvertersTest、KmpAndroidWorkerTest）exit 0，耗时 16 秒，24 tasks 中 9 executed、15 UP-TO-DATE。报告合计 22 项，21 项实际运行通过，1 项沿用上游 contentUriTrigger 忽略，零失败/错误；全部 11 个原 Host 源文件仍参与编译。
 真实 WorkDatabase 测试覆盖一次性/周期执行身份、连续 A→B→C UPDATE 的输入/标签/generation 与旧 ID 保持、KEEP 不插入新请求、旧无 KMP 元数据原生任务的查询取消，以及桥注册和清理。Host 结果不证明设备进程恢复或前台服务。
-根 App `aiVerifyTier1` exit 0（5 秒，30 tasks 中 2 executed、28 UP-TO-DATE）；`.1/.2` 共 24 个已验收制品摘要全部保持。本批只预留新的私有版本，尚未发布或切换应用依赖。
+根 App `aiVerifyTier1` exit 0（5 秒，30 tasks 中 2 executed、28 UP-TO-DATE）；`.1/.2` 共 24 个已验收制品摘要全部保持。C1 源码提交只预留新版本，随后发布结果见 C1p 节；应用依赖尚未切换。
+
+## C1p 新私有版本发布与实际消费（2026-11-05）
+
+已将 C1 提交 `01a4776` 对应的 `4.0.8-cpf.3-android.1` 成组发布到本入口文件仓库，未写外部仓库。core 根/JVM、Android 根/叶四坐标均同版，16 个 jar/AAR/POM/GMM 制品已记录摘要；`.1/.2` 共 24 个旧制品摘要保持。发布 exit 0、3 秒，44 tasks 中 24 executed、20 UP-TO-DATE。
+独立 consumer 从私有 Android 根 GAV 解析，同版私有 core 闭包完整，无上游 worker 重复制品；实际 `checkDebugAarMetadata compileDebugKotlin assembleDebug` exit 0、11 秒，36 tasks 中 5 executed、31 UP-TO-DATE。编译与运行时依赖图均 exit 0。consumer 使用主仓 wrapper 9.5 / AGP 9.1 / Kotlin 2.4.20 / JVM 17，未通过 project、composite、mavenLocal 或直接 AAR 绕过。
+AAR 保留 launcher 与 notificationCustomizer 及本批三类生产实现，class major 55（JVM 11）；Android 叶 sources.jar 的三份源码与 C1 源文件字节一致。GMM 叶 component 正常回指根所有者，已核实根叶版本、关联文件及依赖闭包；未将叶 component 强行要求为物理叶名。
+校验工具初始误判了 GMM 所有者和 Android 源码制品位置，已分别改按真实根叶关联、叶 sources.jar 核对；没有修改库代码或制品。验证结果不包含 APK 安装运行、系统后台/前台服务或 Native/iOS 验收。App 尚未切换到 fork，SDK 和现有功能表现仍保持。
