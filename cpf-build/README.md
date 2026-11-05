@@ -442,11 +442,16 @@ Android Host 合同测试使用真实 `TestListenableWorkerBuilder` / `KmpAndroi
 
 默认四坐标预留为 `4.0.8-cpf.3-android.4`，后续须成组发布和消费配套 core / Android。
 `promote` 的返回方法描述符发生 ABI 变化，不保证与旧 Android bridge 二进制混用兼容。
-本批编译、定向测试和生产 core JAR 的测试隔离检查已完成，结果见下文；尚未发布新版本。
+C3a 编译、定向测试和生产 core JAR 的测试隔离检查已完成，结果见下文；源码提交时尚未发布，后续发布见 C3ap。
 App、SDK guard、Provider / Factory、依赖及 iOS preview 版本逻辑保持。
 
 ### C3a 实际门禁
 
 Core JVM 反射桥 7 项、Android 六类报告 70 项合计 77 项，其中 76 项运行通过、1 项沿用上游 contentUriTrigger 忽略，零失败/错误。Android bridge 26 项涵盖 SDK 24/30/31 的受控 ForegroundUpdater；这些是 Worker/桥接等待与清理合同，不是系统前台服务启动或通知落库验收。生产和完整测试源集编译通过，定向门禁 exit 0（1 分 31 秒，26 tasks 中 6 executed、20 UP-TO-DATE）。
 首轮 JVM 仅异步异常顶层对象身份断言失败；coroutines 1.11 栈恢复会创建同类型副本并保留原 cause。只修两处异步测试，仍要求相同类型/消息和原实例自身或单层 cause，保留同步身份与取消/清理断言，生产编译在重跑中均 UP-TO-DATE，没有关闭恢复或修改生产来迎合测试。
-生产 core JVM Jar 扫描确认反射 fake 和新测试类均不存在；编译产物 javap 确认 promote 返回 CompletableFuture<Void>。72 个旧制品摘要保持；App `aiVerifyTier1` exit 0（4 秒，32 tasks 中 3 executed、29 UP-TO-DATE，已含自有模块编译）。新 `.3-android.4` 尚未发布，设备服务、Native/iOS 和 C3b 启动前 provider 仍未验收。
+生产 core JVM Jar 扫描确认反射 fake 和新测试类均不存在；编译产物 javap 确认 promote 返回 CompletableFuture<Void>。72 个旧制品摘要保持；App `aiVerifyTier1` exit 0（4 秒，32 tasks 中 3 executed、29 UP-TO-DATE，已含自有模块编译）。C3a 源码提交时新 `.3-android.4` 尚未发布，后续见 C3ap；设备服务、Native/iOS 和 C3b 启动前 provider 仍未验收。
+
+## C3ap Future 返回 ABI 的实际消费
+
+`.3-android.4` 配套 core/JVM/Android 根叶四坐标已本地发布，exit 0（2 秒，44 tasks 中 25 executed、19 UP-TO-DATE）。16 个新制品同版，旧 72 个摘要保持；core 生产 JAR 和 JVM sources.jar 均不含测试 fake 或新测试类，C3a 三份生产源码字节与相应制品一致。实际 AAR classes.jar 的 javap 确认 CompletableFuture<Void> 返回描述符。
+独立 AGP9.1 / Gradle9.5 consumer 新增仅函数引用的 CF<Void> 返回类型检查，保留所有旧引用；从新根 GAV 编译/组装 exit 0（10 秒，36 tasks 中 7 executed、29 UP-TO-DATE），两份依赖图同版闭包通过。未调用 promote、安装消费 APK 或初始化调度。新 core 与 Android 必须配套，不承诺和旧 void bridge 二进制混用兼容；设备前台服务、Native/iOS 与 C3b provider 仍未验收。

@@ -6,6 +6,8 @@
 package com.lihb.forks.worker.probe
 
 import android.content.Context
+import io.github.mobilebytelabs.worker.ForegroundInfo
+import io.github.mobilebytelabs.worker.ForegroundWorker
 import io.github.mobilebytelabs.worker.WorkData
 import io.github.mobilebytelabs.worker.WorkInfo
 import io.github.mobilebytelabs.worker.WorkManager
@@ -18,6 +20,7 @@ import io.github.mobilebytelabs.worker.android.WorkerKmpStarterApplication
 import io.github.mobilebytelabs.worker.android.androidWorkManagerFactory
 import kotlinx.coroutines.flow.Flow
 import org.koin.core.module.Module
+import java.util.concurrent.CompletableFuture
 import kotlin.uuid.Uuid
 
 // 只进行类型检查；不构造 WorkManager、不调用 factory，也不触发初始化或调度。
@@ -31,6 +34,10 @@ internal object AndroidConsumerCompileProbe {
         AndroidWorkManager::getWorkInfoByIdFlow
     val cancelUniqueWorkReference: suspend (AndroidWorkManager, String) -> Unit =
         AndroidWorkManager::cancelUniqueWork
+
+    // 仅检查前台提升的 Future 返回类型，不调用 promote。
+    fun promotionReference(): (ForegroundWorker, ForegroundInfo) -> CompletableFuture<Void> =
+        AndroidForegroundBridge::promote
 
     fun coreContract(manager: AndroidWorkManager): WorkManager = manager
 
