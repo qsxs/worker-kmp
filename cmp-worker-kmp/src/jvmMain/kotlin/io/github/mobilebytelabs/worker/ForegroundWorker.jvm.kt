@@ -3,11 +3,14 @@
 package io.github.mobilebytelabs.worker
 
 import co.touchlab.kermit.Logger
+import kotlinx.coroutines.future.await
 import java.awt.AWTException
 import java.awt.Color
 import java.awt.SystemTray
 import java.awt.TrayIcon
 import java.awt.image.BufferedImage
+import java.lang.reflect.InvocationTargetException
+import java.util.concurrent.CompletionStage
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -28,17 +31,12 @@ import java.util.concurrent.ConcurrentHashMap
  *
  * Added in v3.0.0-alpha01.X (Phase 1 deep impl).
  *
- * Android consumers do NOT route through this actual — they go through
- * `cmp-worker-android`'s `KmpAndroidWorker` which calls `setForegroundAsync` on
- * `androidx.work.CoroutineWorker` directly. The Android Foreground bridge lives
- * in `cmp-worker-android` because `cmp-worker-kmp` is JVM-only (no `android()`
- * target) — see Phase 1 alpha01.X deviation note in CHANGELOG.
+ * Android 消费者也使用此 JVM actual，反射调用 Android bridge 并等待原生提升完成。
+ * Android 依赖保留在 `cmp-worker-android`；已发现的 bridge 发生错误时向调用者抛出。
  */
 @ExperimentalForegroundApi
 public actual suspend fun runAsForeground(worker: ForegroundWorker, info: ForegroundInfo) {
-    // Android consumers ship the JVM jar of cmp-worker-kmp at runtime; route them to the
-    // androidx.work-aware bridge in cmp-worker-android instead of SystemTray (which crashes
-    // on Android). Discovery is reflective so cmp-worker-kmp keeps zero Android dependencies.
+    // Android 的反射与提升失败必须向上传播，只有缺少 bridge 类才返回 false。
     if (isAndroidRuntime() && dispatchToAndroidBridge(worker, info)) return
     if (!isSystemTraySupported()) {
         Logger.withTag("worker-kmp.foreground.desktop").w {
@@ -101,7 +99,6 @@ private fun formatTooltip(info: ForegroundInfo): String = "${info.title} — ${i
 // ── Android bridge dispatch (reflective — keeps Android dependencies out of cmp-worker-kmp) ──
 
 private const val ANDROID_BRIDGE_FQCN = "io.github.mobilebytelabs.worker.android.AndroidForegroundBridge"
-private const val ANDROID_BRIDGE_INSTANCE_FIELD = "INSTANCE"
 private const val ANDROID_BRIDGE_METHOD = "promote"
 
 private fun isAndroidRuntime(): Boolean {
@@ -112,16 +109,23 @@ private fun isAndroidRuntime(): Boolean {
         vmName.contains("ART", ignoreCase = true)
 }
 
-private fun dispatchToAndroidBridge(worker: ForegroundWorker, info: ForegroundInfo): Boolean = runCatching {
-    val cls = Class.forName(ANDROID_BRIDGE_FQCN)
-    val instance = cls.getField(ANDROID_BRIDGE_INSTANCE_FIELD).get(null)
-    val method = cls.getMethod(ANDROID_BRIDGE_METHOD, ForegroundWorker::class.java, ForegroundInfo::class.java)
-    method.invoke(instance, worker, info)
-    true
-}.getOrElse { t ->
-    Logger.withTag("worker-kmp.foreground").w(t) {
-        "Android runtime detected but $ANDROID_BRIDGE_FQCN unavailable — " +
-            "include cmp-worker-android in your dependencies for foreground tasks."
+internal suspend fun dispatchToAndroidBridge(worker: ForegroundWorker, info: ForegroundInfo): Boolean {
+    val cls = try {
+        Class.forName(ANDROID_BRIDGE_FQCN)
+    } catch (error: ClassNotFoundException) {
+        Logger.withTag("worker-kmp.foreground").w(error) {
+            "Android runtime detected but $ANDROID_BRIDGE_FQCN unavailable — " +
+                "include cmp-worker-android in your dependencies for foreground tasks."
+        }
+        return false
     }
-    false
+    val method = cls.getMethod(ANDROID_BRIDGE_METHOD, ForegroundWorker::class.java, ForegroundInfo::class.java)
+    val completion = try {
+        method.invoke(null, worker, info)
+    } catch (error: InvocationTargetException) {
+        throw error.targetException
+    }
+    check(completion is CompletionStage<*>) { "$ANDROID_BRIDGE_FQCN.promote must return a CompletionStage." }
+    completion.await()
+    return true
 }

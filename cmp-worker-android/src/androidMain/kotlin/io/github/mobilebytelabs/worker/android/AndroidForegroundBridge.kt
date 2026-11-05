@@ -14,6 +14,7 @@ import io.github.mobilebytelabs.worker.ExperimentalForegroundApi
 import io.github.mobilebytelabs.worker.ForegroundInfo
 import io.github.mobilebytelabs.worker.ForegroundServiceType
 import io.github.mobilebytelabs.worker.ForegroundWorker
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.uuid.Uuid
 import androidx.work.ForegroundInfo as AndroidForegroundInfo
@@ -86,35 +87,24 @@ public object AndroidForegroundBridge {
      * an Android runtime is detected. Looks up the live [KmpAndroidWorker] for
      * [worker.id] and promotes it to a foreground service.
      *
-     * Silently no-ops with a kermit WARN if no live worker is registered for the id
-     * (worker invoked `setForeground` outside its `doWork()` lifetime, or the
-     * androidx.work bridge isn't running this worker — e.g. an in-process test).
+     * 返回原生前台提升的真实完成链，失败与取消均传回调用者。
+     * 未注册活动 Worker、通知构建与定制失败时直接抛出，禁止伪装为提升成功。
      */
     @JvmStatic
-    public fun promote(worker: ForegroundWorker, info: ForegroundInfo) {
-        val androidWorker = activeWorkers[worker.id]
-        if (androidWorker == null) {
-            Logger.withTag("worker-kmp.foreground.android").w {
-                "AndroidForegroundBridge.promote(id=${worker.id}) — no live KmpAndroidWorker registered. " +
-                    "setForeground() called outside doWork() lifetime?"
-            }
-            return
+    public fun promote(worker: ForegroundWorker, info: ForegroundInfo): CompletableFuture<Void> {
+        val androidWorker = checkNotNull(activeWorkers[worker.id]) {
+            "No active KmpAndroidWorker registered for id=${worker.id}; setForeground() requires an active doWork()."
         }
         val context = androidWorker.applicationContext
-        runCatching {
-            ensureNotificationChannel(context)
-            val notification = buildNotification(context, worker.id, info)
-            val androidInfo = buildAndroidForegroundInfo(info.notificationId, notification, info.serviceType)
-            androidWorker.setForegroundAsync(androidInfo)
-            Logger.withTag("worker-kmp.foreground.android").d {
-                "Android foreground promotion dispatched: id=${worker.id} title=${info.title} " +
-                    "progress=${info.progress.progress} serviceType=${info.serviceType}"
-            }
-        }.onFailure { t ->
-            Logger.withTag("worker-kmp.foreground.android").w(t) {
-                "Android foreground promotion failed for id=${worker.id}"
-            }
+        ensureNotificationChannel(context)
+        val notification = buildNotification(context, worker.id, info)
+        val androidInfo = buildAndroidForegroundInfo(info.notificationId, notification, info.serviceType)
+        val completion = androidWorker.setForegroundAsync(androidInfo).asCompletableFuture()
+        Logger.withTag("worker-kmp.foreground.android").d {
+            "Android foreground promotion dispatched: id=${worker.id} title=${info.title} " +
+                "progress=${info.progress.progress} serviceType=${info.serviceType}"
         }
+        return completion
     }
 
     private fun ensureNotificationChannel(context: Context) {

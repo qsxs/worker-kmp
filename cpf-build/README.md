@@ -87,10 +87,10 @@ Android KMP library、Compose Multiplatform、Compose compiler 插件，不使�
 
 坐标由本目录 `gradle.properties` 的 `cpf.group`、`cpf.version` 提供，默认值为：
 
-- core KMP 根坐标：`com.lihb.forks.worker:worker-kmp:4.0.8-cpf.3-android.3`。
-- core JVM 坐标：`com.lihb.forks.worker:worker-kmp-jvm:4.0.8-cpf.3-android.3`。
-- Android KMP 根坐标：`com.lihb.forks.worker:worker-android:4.0.8-cpf.3-android.3`。
-- Android 目标叶坐标：`com.lihb.forks.worker:worker-android-android:4.0.8-cpf.3-android.3`。
+- core KMP 根坐标：`com.lihb.forks.worker:worker-kmp:4.0.8-cpf.3-android.4`。
+- core JVM 坐标：`com.lihb.forks.worker:worker-kmp-jvm:4.0.8-cpf.3-android.4`。
+- Android KMP 根坐标：`com.lihb.forks.worker:worker-android:4.0.8-cpf.3-android.4`。
+- Android 目标叶坐标：`com.lihb.forks.worker:worker-android-android:4.0.8-cpf.3-android.4`。
 - 文件仓库：`cpf-build/build/repository`，发布仓库名称为 `Cpf`。
 
 Android 坐标按 KMP 的 `kotlinMultiplatform` / `android` publication 分别设置，
@@ -420,3 +420,33 @@ core JVM 生产与原测试源码、完整 Android/Host 编译和五类定向测
 `4.0.8-cpf.3-android.3` 四坐标同版本地发布 exit 0（2 秒，44 tasks 中 25 executed、19 UP-TO-DATE），16 个新制品及既有 56 个制品摘要通过核对。Android 完整类和四份叶源码保持，实际 JVM core JAR 的 javap 确认 `public default int getRunAttemptCount()`，其 JVM sources.jar 与本批 core 源码字节一致。
 独立消费探针保留全部旧 API 引用，并增加 getter、按 ID Flow、suspend unique 取消三个仅类型检查引用；没有构造管理器或执行方法。AGP 9.1 / Gradle 9.5 的真实根 GAV 消费元数据、Kotlin 编译和组装 exit 0（9 秒，36 tasks 中 7 executed、29 UP-TO-DATE），compile/runtime 闭包同版且无上游 worker 重复。
 这项验收证明新公开 Kotlin API 可由外部制品编译使用及 JVM 默认 getter 形态，不扩大为所有旧二进制兼容、Native/iOS、设备或系统调度保证。App SDK/依赖和运行路径保持，未安装消费包或推送远端。
+
+## C3a Android 前台提升完成链
+
+`AndroidForegroundBridge.promote(ForegroundWorker, ForegroundInfo)` 返回
+`CompletableFuture<Void>`，与原生 `setForegroundAsync` 的完成、失败和取消保持联动。
+未注册活动 Worker、通知构建或 customizer 同步失败均直接抛出；原生异步失败保留原始原因。
+适配只使用 Java 8 / API 24 已有 API，双向取消均调用 `cancel(false)`，不创建额外协程作用域。
+既有 `ListenableFuture.await`、通知 channel、ID、service type 和定制能力保持。
+
+core JVM 反射派发等待现有 coroutines-core `CompletionStage.await`；仅
+`Class.forName` 查找 bridge 本身的 `ClassNotFoundException` 表示 bridge 不存在。
+已找到 bridge 后，方法查找、链接、返回类型、同步执行或异步完成失败均向上传播，
+不会因 Android 提升失败进入 AWT 桌面路径；反射调用异常解包为实际目标异常。
+
+新增 JVM 反射合同测试的同 FQCN fake 仅位于 `jvmTest`，不属于生产源集。
+Android Host 合同测试使用真实 `TestListenableWorkerBuilder` / `KmpAndroidWorker`
+和可控 `ForegroundUpdater`，覆盖 SDK 24 / 30 / 31 的 pending、完成、错误、双向取消，
+同步 customizer 失败、无活动 Worker，以及成功、异常和取消后的实际 `finally` 注销。
+两条路径分开验证，不修改运行时系统属性；Host 结果不能证明真实系统前台服务行为。
+
+默认四坐标预留为 `4.0.8-cpf.3-android.4`，后续须成组发布和消费配套 core / Android。
+`promote` 的返回方法描述符发生 ABI 变化，不保证与旧 Android bridge 二进制混用兼容。
+本批编译、定向测试和生产 core JAR 的测试隔离检查已完成，结果见下文；尚未发布新版本。
+App、SDK guard、Provider / Factory、依赖及 iOS preview 版本逻辑保持。
+
+### C3a 实际门禁
+
+Core JVM 反射桥 7 项、Android 六类报告 70 项合计 77 项，其中 76 项运行通过、1 项沿用上游 contentUriTrigger 忽略，零失败/错误。Android bridge 26 项涵盖 SDK 24/30/31 的受控 ForegroundUpdater；这些是 Worker/桥接等待与清理合同，不是系统前台服务启动或通知落库验收。生产和完整测试源集编译通过，定向门禁 exit 0（1 分 31 秒，26 tasks 中 6 executed、20 UP-TO-DATE）。
+首轮 JVM 仅异步异常顶层对象身份断言失败；coroutines 1.11 栈恢复会创建同类型副本并保留原 cause。只修两处异步测试，仍要求相同类型/消息和原实例自身或单层 cause，保留同步身份与取消/清理断言，生产编译在重跑中均 UP-TO-DATE，没有关闭恢复或修改生产来迎合测试。
+生产 core JVM Jar 扫描确认反射 fake 和新测试类均不存在；编译产物 javap 确认 promote 返回 CompletableFuture<Void>。72 个旧制品摘要保持；App `aiVerifyTier1` exit 0（4 秒，32 tasks 中 3 executed、29 UP-TO-DATE，已含自有模块编译）。新 `.3-android.4` 尚未发布，设备服务、Native/iOS 和 C3b 启动前 provider 仍未验收。
