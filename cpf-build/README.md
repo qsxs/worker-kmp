@@ -87,10 +87,10 @@ Android KMP library、Compose Multiplatform、Compose compiler 插件，不使�
 
 坐标由本目录 `gradle.properties` 的 `cpf.group`、`cpf.version` 提供，默认值为：
 
-- core KMP 根坐标：`com.lihb.forks.worker:worker-kmp:4.0.8-cpf.3-android.4`。
-- core JVM 坐标：`com.lihb.forks.worker:worker-kmp-jvm:4.0.8-cpf.3-android.4`。
-- Android KMP 根坐标：`com.lihb.forks.worker:worker-android:4.0.8-cpf.3-android.4`。
-- Android 目标叶坐标：`com.lihb.forks.worker:worker-android-android:4.0.8-cpf.3-android.4`。
+- core KMP 根坐标：`com.lihb.forks.worker:worker-kmp:4.0.8-cpf.3-android.5`。
+- core JVM 坐标：`com.lihb.forks.worker:worker-kmp-jvm:4.0.8-cpf.3-android.5`。
+- Android KMP 根坐标：`com.lihb.forks.worker:worker-android:4.0.8-cpf.3-android.5`。
+- Android 目标叶坐标：`com.lihb.forks.worker:worker-android-android:4.0.8-cpf.3-android.5`。
 - 文件仓库：`cpf-build/build/repository`，发布仓库名称为 `Cpf`。
 
 Android 坐标按 KMP 的 `kotlinMultiplatform` / `android` publication 分别设置，
@@ -455,3 +455,35 @@ Core JVM 反射桥 7 项、Android 六类报告 70 项合计 77 项，其中 76 
 
 `.3-android.4` 配套 core/JVM/Android 根叶四坐标已本地发布，exit 0（2 秒，44 tasks 中 25 executed、19 UP-TO-DATE）。16 个新制品同版，旧 72 个摘要保持；core 生产 JAR 和 JVM sources.jar 均不含测试 fake 或新测试类，C3a 三份生产源码字节与相应制品一致。实际 AAR classes.jar 的 javap 确认 CompletableFuture<Void> 返回描述符。
 独立 AGP9.1 / Gradle9.5 consumer 新增仅函数引用的 CF<Void> 返回类型检查，保留所有旧引用；从新根 GAV 编译/组装 exit 0（10 秒，36 tasks 中 7 executed、29 UP-TO-DATE），两份依赖图同版闭包通过。未调用 promote、安装消费 APK 或初始化调度。新 core 与 Android 必须配套，不承诺和旧 void bridge 二进制混用兼容；设备前台服务、Native/iOS 与 C3b provider 仍未验收。
+
+## C3b1 启动前前台通知描述
+
+common `ForegroundWorker` 新增 `public open suspend getForegroundInfo(): ForegroundInfo`。
+默认实现明确抛出 `ForegroundNotSupportedException`；既有子类仍可仅覆写 `doWork`。
+provider 只返回初始描述，不执行业务或主动提升前台；AndroidX 负责后续提升与等待。
+
+`KmpAndroidWorker` 在构造时捕获工厂，provider 与 `doWork` 通过普通线程安全 lazy
+共享同一个 context 和业务 worker。`KmpWorkerFactory` 直接注入自身工厂；原 public
+`(Context, WorkerParameters)` 构造器保留，并在构造时只读取一次旧全局工厂入口。
+初始化失败沿用标准 lazy 重试语义，不缓存失败或额外维护状态机。
+
+启动前 provider 和运行时 `promote` 共用通知转换，保留 channel、通知 ID、图标、进度、
+service type 和 customizer 行为。provider 不注册 bridge；仅 `doWork` 的 try/finally
+持有注册，注销按 ID 与当前 worker 配对释放。这是资源所有权约束，不引入 generation
+表或全局运行 guard，也不声明当前 WorkManager 会并行执行同一 work 的多代 worker。
+
+新增 common provider 合同和真实 `TestListenableWorkerBuilder` / native worker Host 测试，
+涵盖共享实例与 context、工厂替换、普通任务、provider 失败，以及 SDK 24 / 30 / 31 的通知
+映射与定制。编译、定向测试、ABI、旧制品摘要和 App Tier 1 已完成，真实结果见下文。
+SDK ≥ 31 的 expedited guard 继续保留，低 SDK expedited 调度顺序属于 C3b2，尚未验收；
+Host 测试不能证明设备前台服务行为，Native/iOS 同样未验收。
+
+默认四坐标预留 `4.0.8-cpf.3-android.5`，尚未发布；新增 open suspend 方法属于公开 ABI
+增量，须成组发布配套 core / Android，并以实际制品消费核对，不承诺所有旧二进制兼容。
+App SDK、依赖和 iOS preview 版本逻辑保持。
+
+### C3b1 实际门禁
+
+Core 四类 16 项、Android 八类 102 项报告合计 118 项，117 项运行通过、1 项沿用上游 contentUriTrigger 忽略，零失败/错误；新 native provider 类 30 项含 SDK24/30/31 的工厂捕获、同 delegate/context、失败无注册和通知映射合同。生产与全部测试源码编译通过，门禁 exit 0（41 秒，26 tasks 中 12 executed、14 UP-TO-DATE）。
+实际 javap 确认 core 非抽象 suspend getForegroundInfo、Android override、原 public(Context,WorkerParameters) 构造器和新增注入构造方法描述符；Kotlin internal 注入入口及公开默认实现只按本批源码/ABI记录，不泛称旧二进制兼容。88 个旧制品摘要保持，生产 core JAR 没有测试类或反射 fake。App Tier1 exit 0（4 秒，32 tasks 中 3 executed、29 UP-TO-DATE）。
+`.3-android.5` 尚未发布；SDK guard 未变，低版本原生 expedited 排队、设备前台服务和 Native/iOS 均未据此通过。资源所有权配对测试不宣称真实 SDK 代际竞争复现。

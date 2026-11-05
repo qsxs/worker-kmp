@@ -79,6 +79,19 @@ public annotation class ExperimentalForegroundApi
 public abstract class ForegroundWorker(context: WorkerContext) : CoroutineWorker(context) {
 
     /**
+     * 提供执行前所需的初始前台通知描述。Android WorkManager 可在 [doWork] 前调用。
+     *
+     * 覆写时只构造描述，不执行任务或调用 [setForeground]；前台提升及等待由平台负责。
+     * 未覆写的普通任务仍可直接执行 [doWork]。
+     *
+     * @throws ForegroundNotSupportedException 未提供初始前台通知描述时抛出。
+     */
+    public open suspend fun getForegroundInfo(): ForegroundInfo = throw ForegroundNotSupportedException(
+        platform = "worker-kmp",
+        reason = "Override getForegroundInfo() to provide an initial foreground notification.",
+    )
+
+    /**
      * Promote this worker to user-visible foreground execution. Idempotent — subsequent
      * calls update the existing foreground notification.
      *

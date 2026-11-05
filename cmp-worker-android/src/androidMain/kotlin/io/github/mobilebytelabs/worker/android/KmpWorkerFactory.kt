@@ -21,7 +21,7 @@ class KmpWorkerFactory(private val kmpFactory: KmpAndroidWorkerFactory = Reflect
     ): ListenableWorker? {
         if (workerClassName != KmpAndroidWorker::class.qualifiedName) return null
         instance = kmpFactory
-        return KmpAndroidWorker(appContext, workerParameters)
+        return KmpAndroidWorker(appContext, workerParameters, kmpFactory)
     }
 
     companion object {

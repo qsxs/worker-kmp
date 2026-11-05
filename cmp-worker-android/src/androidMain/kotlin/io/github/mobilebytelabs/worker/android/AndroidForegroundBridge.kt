@@ -78,8 +78,8 @@ public object AndroidForegroundBridge {
     /**
      * Called by [KmpAndroidWorker] after the user's KMP worker returns (or throws).
      */
-    internal fun unregister(id: Uuid) {
-        activeWorkers.remove(id)
+    internal fun unregister(id: Uuid, worker: KmpAndroidWorker) {
+        activeWorkers.remove(id, worker)
     }
 
     /**
@@ -95,16 +95,23 @@ public object AndroidForegroundBridge {
         val androidWorker = checkNotNull(activeWorkers[worker.id]) {
             "No active KmpAndroidWorker registered for id=${worker.id}; setForeground() requires an active doWork()."
         }
-        val context = androidWorker.applicationContext
-        ensureNotificationChannel(context)
-        val notification = buildNotification(context, worker.id, info)
-        val androidInfo = buildAndroidForegroundInfo(info.notificationId, notification, info.serviceType)
+        val androidInfo = toAndroidForegroundInfo(androidWorker.applicationContext, worker.id, info)
         val completion = androidWorker.setForegroundAsync(androidInfo).asCompletableFuture()
         Logger.withTag("worker-kmp.foreground.android").d {
             "Android foreground promotion dispatched: id=${worker.id} title=${info.title} " +
                 "progress=${info.progress.progress} serviceType=${info.serviceType}"
         }
         return completion
+    }
+
+    internal fun toAndroidForegroundInfo(
+        context: Context,
+        workerId: Uuid,
+        info: ForegroundInfo,
+    ): AndroidForegroundInfo {
+        ensureNotificationChannel(context)
+        val notification = buildNotification(context, workerId, info)
+        return buildAndroidForegroundInfo(info.notificationId, notification, info.serviceType)
     }
 
     private fun ensureNotificationChannel(context: Context) {
