@@ -14,11 +14,20 @@ import io.github.mobilebytelabs.worker.WorkProgress
 import io.github.mobilebytelabs.worker.WorkResult
 import io.github.mobilebytelabs.worker.WorkerContext
 import io.github.mobilebytelabs.worker.oneTimeWorkRequest
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.job
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -95,6 +104,47 @@ class IosWorkManagerTest {
         wm.cancelWorkById(id)
         eventually { wm.getWorkInfoById(id)?.state?.isFinished == true }
         assertEquals(WorkInfo.State.CANCELLED, wm.getWorkInfoById(id)?.state)
+    }
+
+    @Test
+    fun cancelWorkById_discardsLateResultAndProgressFromRunningWorker() = runTest {
+        val running = CompletableDeferred<Job>()
+        val release = CompletableDeferred<Unit>()
+        val reportedLateProgress = CompletableDeferred<Unit>()
+        val factory = object : IosWorkerFactory {
+            override fun create(workerClass: String, context: WorkerContext): CoroutineWorker =
+                object : CoroutineWorker(context) {
+                    override suspend fun doWork(): WorkResult {
+                        val job = currentCoroutineContext().job
+                        return withContext(NonCancellable) {
+                            running.complete(job)
+                            release.await()
+                            setProgress(WorkProgress.COMPLETE)
+                            reportedLateProgress.complete(Unit)
+                            WorkResult.success(WorkData("late" to true))
+                        }
+                    }
+                }
+        }
+        val wm = IosWorkManager(workerFactory = factory, persistence = NoOpIosWorkPersistence)
+        try {
+            val request = OneTimeWorkRequestBuilder<SlowIosWorker>("late-result").build()
+            val id = wm.enqueue(request)
+            val job = withContext(Dispatchers.Default) { withTimeout(2_000) { running.await() } }
+            assertEquals(WorkInfo.State.RUNNING, wm.getWorkInfoById(id)?.state)
+            wm.cancelWorkById(id)
+            release.complete(Unit)
+            withContext(Dispatchers.Default) { withTimeout(2_000) { job.join() } }
+            assertTrue(reportedLateProgress.isCompleted)
+            val cancelled = wm.getWorkInfoById(id)
+            assertEquals(WorkInfo.State.CANCELLED, cancelled?.state)
+            assertEquals(WorkProgress.NONE, cancelled?.progress)
+            assertEquals(WorkData.EMPTY, cancelled?.outputData)
+            assertEquals(1, cancelled?.runAttemptCount)
+        } finally {
+            release.complete(Unit)
+            wm.shutdown()
+        }
     }
 
     @Test
@@ -196,6 +246,40 @@ class IosWorkManagerTest {
         assertEquals(WorkInfo.State.CANCELLED, wm.getWorkInfoById(req1.id)?.state)
     }
 
+    @Test
+    @OptIn(ExperimentalCoroutinesApi::class)
+    fun enqueueUniquePeriodicWork_replace_replayingCancelledIdKeepsReplacement() = runTest {
+        val wm = workManager()
+        val builder = PeriodicWorkRequestBuilder<SuccessIosWorker>(
+            SuccessIosWorker::class.simpleName!!,
+            repeatInterval = 5.minutes,
+        ).setInitialDelay(5.minutes)
+        val previous = builder.build()
+        val replacement = builder.build()
+        val name = "replace-ios"
+        val policy = ExistingPeriodicWorkPolicy.REPLACE
+        val activeIds = mutableListOf<Set<Uuid>>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            wm.getWorkInfosForUniqueWorkFlow(name).collect { work ->
+                activeIds += work.filterNot(WorkInfo::isFinished).map(WorkInfo::id).toSet()
+            }
+        }
+        try {
+            wm.enqueueUniquePeriodicWork(name, policy, previous)
+            wm.enqueueUniquePeriodicWork(name, policy, replacement)
+            assertEquals(WorkInfo.State.CANCELLED, wm.getWorkInfoById(previous.id)?.state)
+            assertEquals(WorkInfo.State.ENQUEUED, wm.getWorkInfoById(replacement.id)?.state)
+
+            assertEquals(previous.id, wm.enqueueUniquePeriodicWork(name, policy, previous))
+
+            assertEquals(WorkInfo.State.CANCELLED, wm.getWorkInfoById(previous.id)?.state)
+            assertEquals(WorkInfo.State.ENQUEUED, wm.getWorkInfoById(replacement.id)?.state)
+            assertEquals(listOf(setOf(previous.id), setOf(replacement.id)), activeIds.filter { it.isNotEmpty() })
+        } finally {
+            wm.shutdown()
+        }
+    }
+
     // ── Config + persistence tests ────────────────────────────────────────────
 
     @Test
@@ -221,12 +305,16 @@ class IosWorkManagerTest {
     fun persistence_save_isCalledOnEnqueue() = runTest {
         val persistence = InMemoryIosWorkPersistence()
         val wm = workManager(persistence = persistence)
-        val req = OneTimeWorkRequestBuilder<SuccessIosWorker>(
-            SuccessIosWorker::class.simpleName!!,
-        ).build()
-        wm.enqueue(req)
-        eventually { persistence.loadAll().any { it.id == req.id } }
-        assertTrue(persistence.loadAll().isNotEmpty())
+        try {
+            val req = OneTimeWorkRequestBuilder<SlowIosWorker>(
+                SlowIosWorker::class.simpleName!!,
+            ).setInitialDelay(5.minutes).build()
+            wm.enqueue(req)
+            eventually { persistence.loadAll().any { it.id == req.id } }
+            assertEquals(WorkInfo.State.ENQUEUED, persistence.loadAll().singleOrNull { it.id == req.id }?.state)
+        } finally {
+            wm.shutdown()
+        }
     }
 
     @Test

@@ -4,6 +4,7 @@ import org.gradle.api.publish.maven.tasks.PublishToMavenRepository
 import org.gradle.api.tasks.compile.JavaCompile
 import org.jetbrains.kotlin.gradle.ExperimentalKotlinGradlePluginApi
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import org.jetbrains.kotlin.gradle.tasks.KotlinCompileTool
 
 plugins {
     alias(libs.plugins.kotlin.multiplatform)
@@ -86,6 +87,18 @@ kotlin {
             resources.setSrcDirs(listOf(upstreamSources.dir("jvmTest/resources")))
         }
     }
+}
+
+// Windows 上直接测试 iOS 的公共状态源码，避免把它编进 JVM 主制品。
+val iosSources = layout.projectDirectory.dir("../cmp-worker-ios/src")
+val iosStatePackage = "kotlin/io/github/mobilebytelabs/worker/ios"
+tasks.named<KotlinCompileTool>("compileTestKotlinJvm") {
+    source(
+        iosSources.file("commonMain/$iosStatePackage/IosWorkStateStore.kt"),
+        iosSources.file("commonMain/$iosStatePackage/IosWorkPersistence.kt"),
+        iosSources.file("commonTest/$iosStatePackage/InMemoryIosWorkPersistence.kt"),
+        iosSources.file("commonTest/$iosStatePackage/IosWorkStateStoreTest.kt"),
+    )
 }
 
 // JVM Java 任务与 Kotlin 保持相同目标，不采用 JDK 21 的默认字节码级别。

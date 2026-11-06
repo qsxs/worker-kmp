@@ -16,8 +16,10 @@ import io.github.mobilebytelabs.worker.WorkResult
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -25,6 +27,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlin.math.pow
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
@@ -46,7 +49,7 @@ class IosWorkManager internal constructor(
         SupervisorJob() + Dispatchers.Default + CoroutineName("IosWorkManager"),
     )
     private val mutex = Mutex()
-    private val jobRegistry = mutableMapOf<Uuid, Job>()
+    private val jobRegistry = mutableMapOf<Uuid, RegisteredWork>()
     private val stateStore = IosWorkStateStore(persistence = persistence, scope = scope)
 
     init {
@@ -62,14 +65,12 @@ class IosWorkManager internal constructor(
     }
 
     override suspend fun enqueue(request: OneTimeWorkRequest): Uuid {
-        stateStore.initWork(request.id, request.tags)
-        val job = scope.launch {
+        registerWork(request, request.tags) {
             val delayMs = request.initialDelay.inWholeMilliseconds
             if (delayMs > 0) delay(delayMs)
             awaitConstraintsSatisfied(request.constraints)
             executeWorker(request)
-        }
-        mutex.withLock { jobRegistry[request.id] = job }
+        }?.start()
         return request.id
     }
 
@@ -78,10 +79,15 @@ class IosWorkManager internal constructor(
         existingPeriodicWorkPolicy: ExistingPeriodicWorkPolicy,
         request: PeriodicWorkRequest,
     ): Uuid {
-        if (existingPeriodicWorkPolicy == ExistingPeriodicWorkPolicy.REPLACE) {
-            cancelAllWorkByTag(uniqueWorkName)
-        }
-        stateStore.initWork(request.id, request.tags + uniqueWorkName)
+        val replaceTag = uniqueWorkName.takeIf { existingPeriodicWorkPolicy == ExistingPeriodicWorkPolicy.REPLACE }
+        val job = registerWork(request, request.tags + uniqueWorkName, replaceTag) {
+            val delayMs = request.initialDelay.inWholeMilliseconds
+            if (delayMs > 0) delay(delayMs)
+            while (isActive) {
+                executeWorker(request)
+                delay(request.repeatInterval.inWholeMilliseconds)
+            }
+        } ?: return request.id
         // quickRefresh: schedule BGAppRefreshTaskRequest instead of BGProcessingTaskRequest.
         if (request.quickRefresh &&
             config.enableBackgroundTasks &&
@@ -92,22 +98,62 @@ class IosWorkManager internal constructor(
                 earliestBeginInSeconds = request.initialDelay.inWholeMilliseconds / 1000.0,
             )
         }
-        val job = scope.launch {
-            val delayMs = request.initialDelay.inWholeMilliseconds
-            if (delayMs > 0) delay(delayMs)
-            while (isActive) {
-                executeWorker(request)
-                delay(request.repeatInterval.inWholeMilliseconds)
-            }
-        }
-        mutex.withLock { jobRegistry[request.id] = job }
+        job.start()
         return request.id
     }
 
+    private suspend fun registerWork(
+        request: WorkRequest,
+        tags: Set<String>,
+        replaceTag: String? = null,
+        execute: suspend CoroutineScope.() -> Unit,
+    ): Job? {
+        val (job, replacedJobs) = mutex.withLock {
+            val snapshot = stateStore.snapshot()
+            val existing = snapshot[request.id]
+            if (request.id in jobRegistry) return@withLock null
+            if (existing != null && existing.state != WorkInfo.State.ENQUEUED) return@withLock null
+            val previousJobs = if (replaceTag == null) {
+                emptyList()
+            } else {
+                snapshot.values
+                    .filter { it.id != request.id && replaceTag in it.tags }
+                    .mapNotNull { markCancelled(it.id) }
+            }
+            stateStore.initWork(request.id, tags)
+            // 空快照时，恢复可能先于 initWork 写入同一个 ID。
+            if (stateStore.getById(request.id)?.state != WorkInfo.State.ENQUEUED) {
+                return@withLock null to previousJobs
+            }
+            val newJob = scope.launch(start = CoroutineStart.LAZY) {
+                try {
+                    execute()
+                } finally {
+                    val currentJob = coroutineContext[Job]
+                    withContext(NonCancellable) {
+                        mutex.withLock {
+                            if (jobRegistry[request.id]?.job === currentJob) jobRegistry.remove(request.id)
+                        }
+                    }
+                }
+            }
+            jobRegistry[request.id] = RegisteredWork(newJob, request is PeriodicWorkRequest)
+            newJob to previousJobs
+        } ?: return null
+        replacedJobs.forEach { it.cancel() }
+        return job
+    }
+
     override suspend fun cancelWorkById(id: Uuid) {
-        val job = mutex.withLock { jobRegistry.remove(id) } ?: return
-        job.cancel()
-        stateStore.updateState(id, WorkInfo.State.CANCELLED)
+        val job = mutex.withLock { markCancelled(id) }
+        job?.cancel()
+    }
+
+    private fun markCancelled(id: Uuid): Job? {
+        val work = jobRegistry[id]
+        // 周期任务在两轮之间也可能显示为 SUCCEEDED 或 FAILED。
+        val periodic = work != null && work.periodic && !work.job.isCompleted
+        return if (stateStore.cancelWork(id, periodic)) jobRegistry.remove(id)?.job else null
     }
 
     override suspend fun cancelAllWorkByTag(tag: String) {
@@ -200,13 +246,13 @@ class IosWorkManager internal constructor(
             stateStore = stateStore,
         )
         val worker = workerFactory.create(request.workerClass, context)
-        if (!stateStore.transitionToRunning(request.id)) return
+        if (!stateStore.transitionToRunning(request.id, periodic = request is PeriodicWorkRequest)) return
 
         var attempt = 0
         var result: WorkResult
         try {
             do {
-                stateStore.incrementAttempt(request.id)
+                if (!stateStore.incrementAttempt(request.id)) return
                 result = try {
                     worker.doWork()
                 } catch (e: CancellationException) {
@@ -223,17 +269,13 @@ class IosWorkManager internal constructor(
                 }
             } while (true)
 
-            val finalState = when (result) {
-                is WorkResult.Success -> WorkInfo.State.SUCCEEDED
-                else -> WorkInfo.State.FAILED
-            }
-            stateStore.updateState(
+            stateStore.finishWork(
                 request.id,
-                finalState,
-                (result as? WorkResult.Success)?.outputData ?: WorkData.EMPTY,
+                succeeded = result is WorkResult.Success,
+                outputData = (result as? WorkResult.Success)?.outputData ?: WorkData.EMPTY,
             )
         } catch (e: CancellationException) {
-            stateStore.updateState(request.id, WorkInfo.State.CANCELLED)
+            stateStore.cancelWork(request.id)
             throw e
         }
     }
@@ -245,16 +287,19 @@ class IosWorkManager internal constructor(
             .filter { it.state == WorkInfo.State.ENQUEUED }
         if (pending.isEmpty()) return true
         pending.forEach { info ->
-            val job = mutex.withLock { jobRegistry[info.id] }
-            if (job == null || !job.isActive) {
-                // Re-queue orphaned work (e.g. restored from persistence after an app kill).
-                stateStore.updateState(info.id, WorkInfo.State.ENQUEUED)
+            mutex.withLock {
+                if (info.id !in jobRegistry) {
+                    // 仅重新保存仍处于排队状态的孤立记录，旧快照可能已被取消。
+                    stateStore.refreshEnqueuedWork(info.id)
+                }
             }
         }
         // Allow launched coroutines a moment to start — BG task has limited time budget.
         delay(100)
         return true
     }
+
+    private data class RegisteredWork(val job: Job, val periodic: Boolean)
 }
 
 internal fun iosBackoffDelay(config: RetryConfig, attempt: Int): Duration {
