@@ -2,6 +2,7 @@
     kotlinx.cinterop.ExperimentalForeignApi::class,
     kotlinx.cinterop.BetaInteropApi::class,
     ExperimentalForegroundApi::class,
+    kotlin.experimental.ExperimentalNativeApi::class,
 )
 
 package io.github.mobilebytelabs.worker
@@ -17,6 +18,7 @@ import platform.UIKit.UIDevice
 import platform.UserNotifications.UNMutableNotificationContent
 import platform.UserNotifications.UNNotificationRequest
 import platform.UserNotifications.UNUserNotificationCenter
+import kotlin.native.Platform
 
 /**
  * iOS actual for [runAsForeground].
@@ -46,8 +48,10 @@ public actual suspend fun runAsForeground(worker: ForegroundWorker, info: Foregr
     // UNUserNotificationCenter throw ObjC NSExceptions that Kotlin's runCatching cannot
     // intercept (they propagate as SIGABRT). Guard before touching any system API.
     if (isInTestBinary()) {
-        Logger.withTag("worker-kmp.foreground.ios").d {
-            "Foreground scheduling skipped — test binary context, no host app. id=${info.notificationId}"
+        if (Platform.isDebugBinary) {
+            Logger.withTag("worker-kmp.foreground.ios").d {
+                "Foreground scheduling skipped — test binary context, no host app. id=${info.notificationId}"
+            }
         }
         return
     }
@@ -61,10 +65,12 @@ public actual suspend fun runAsForeground(worker: ForegroundWorker, info: Foregr
     }
     val majorVersion = runCatching { parseMajorIosVersion(UIDevice.currentDevice.systemVersion) }.getOrDefault(0)
     if (majorVersion >= IOS_17 && BgContinuedProcessing.getIdentifier().isEmpty()) {
-        Logger.withTag("worker-kmp.foreground.ios").d {
-            "iOS $majorVersion — IosWorkerConfig.continuedProcessingTaskIdentifier is empty; " +
-                "to opt into BGContinuedProcessing set the identifier (and register it in Info.plist). " +
-                "Falling back to BGProcessingTask + UNNotification shim. id=${info.notificationId}"
+        if (Platform.isDebugBinary) {
+            Logger.withTag("worker-kmp.foreground.ios").d {
+                "iOS $majorVersion — IosWorkerConfig.continuedProcessingTaskIdentifier is empty; " +
+                    "to opt into BGContinuedProcessing set the identifier (and register it in Info.plist). " +
+                    "Falling back to BGProcessingTask + UNNotification shim. id=${info.notificationId}"
+            }
         }
     }
     scheduleProcessingWithNotification(info)
@@ -89,8 +95,10 @@ private fun scheduleProcessingWithNotification(info: ForegroundInfo) {
         request.requiresExternalPower = false
         BGTaskScheduler.sharedScheduler.submitTaskRequest(request, null)
     }.onFailure { t ->
-        Logger.withTag("worker-kmp.foreground.ios").w(t) {
-            "BGProcessingTaskRequest submit failed for id=$identifier — notification shown anyway."
+        if (Platform.isDebugBinary) {
+            Logger.withTag("worker-kmp.foreground.ios").w(t) {
+                "BGProcessingTaskRequest submit failed for id=$identifier — notification shown anyway."
+            }
         }
     }
     postUserNotification(identifier, info)
@@ -109,8 +117,10 @@ private fun postUserNotification(identifier: String, info: ForegroundInfo) {
         UNUserNotificationCenter.currentNotificationCenter()
             .addNotificationRequest(notifRequest, withCompletionHandler = null)
     }.onFailure { t ->
-        Logger.withTag("worker-kmp.foreground.ios").w(t) {
-            "UNNotificationCenter.addNotificationRequest failed for id=$identifier"
+        if (Platform.isDebugBinary) {
+            Logger.withTag("worker-kmp.foreground.ios").w(t) {
+                "UNNotificationCenter.addNotificationRequest failed for id=$identifier"
+            }
         }
     }
 }

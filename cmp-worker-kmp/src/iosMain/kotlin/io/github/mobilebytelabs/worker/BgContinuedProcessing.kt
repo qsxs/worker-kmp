@@ -1,6 +1,7 @@
 @file:OptIn(
     kotlinx.cinterop.ExperimentalForeignApi::class,
     kotlinx.cinterop.BetaInteropApi::class,
+    kotlin.experimental.ExperimentalNativeApi::class,
 )
 
 package io.github.mobilebytelabs.worker
@@ -10,6 +11,7 @@ import platform.BackgroundTasks.BGProcessingTaskRequest
 import platform.BackgroundTasks.BGTaskScheduler
 import platform.Foundation.NSClassFromString
 import platform.UIKit.UIDevice
+import kotlin.native.Platform
 
 /**
  * iOS 17+ `BGContinuedProcessingTaskRequest` integration for the foreground API.
@@ -72,11 +74,13 @@ public object BgContinuedProcessing {
         if (majorVersion < IOS_17) return false
         val cls = NSClassFromString("BGContinuedProcessingTaskRequest")
         if (cls == null) {
-            Logger.withTag("worker-kmp.foreground.ios").d {
-                "BGContinuedProcessingTaskRequest not found in ObjC runtime (Kotlin/Native binding pending) — " +
-                    "iOS $majorVersion consumer with continuedProcessingTaskIdentifier=$identifier " +
-                    "falls back to BGProcessingTask + UNNotification shim. " +
-                    "Replace with typed call site once K/N exposes the class."
+            if (Platform.isDebugBinary) {
+                Logger.withTag("worker-kmp.foreground.ios").d {
+                    "BGContinuedProcessingTaskRequest not found in ObjC runtime (Kotlin/Native binding pending) — " +
+                        "iOS $majorVersion consumer with continuedProcessingTaskIdentifier=$identifier " +
+                        "falls back to BGProcessingTask + UNNotification shim. " +
+                        "Replace with typed call site once K/N exposes the class."
+                }
             }
             return false
         }
@@ -91,13 +95,17 @@ public object BgContinuedProcessing {
             request.requiresNetworkConnectivity = false
             request.requiresExternalPower = false
             BGTaskScheduler.sharedScheduler.submitTaskRequest(request, null)
-            Logger.withTag("worker-kmp.foreground.ios").i {
-                "Submitted continued-processing request for identifier=$identifier title='${info.title}'"
+            if (Platform.isDebugBinary) {
+                Logger.withTag("worker-kmp.foreground.ios").i {
+                    "Submitted continued-processing request for identifier=$identifier title='${info.title}'"
+                }
             }
             true
         }.getOrElse { t ->
-            Logger.withTag("worker-kmp.foreground.ios").w(t) {
-                "BGContinuedProcessing submit failed for identifier=$identifier"
+            if (Platform.isDebugBinary) {
+                Logger.withTag("worker-kmp.foreground.ios").w(t) {
+                    "BGContinuedProcessing submit failed for identifier=$identifier"
+                }
             }
             false
         }

@@ -1,9 +1,10 @@
-@file:OptIn(kotlinx.cinterop.ExperimentalForeignApi::class)
+@file:OptIn(kotlinx.cinterop.ExperimentalForeignApi::class, kotlin.experimental.ExperimentalNativeApi::class)
 
 package io.github.mobilebytelabs.worker.ios
 
 import co.touchlab.kermit.Logger
 import platform.Foundation.NSBundle
+import kotlin.native.Platform
 
 /**
  * Inspects the host app's `Info.plist` against the active [IosWorkManagerConfig] and
@@ -24,8 +25,10 @@ import platform.Foundation.NSBundle
  */
 internal fun validateInfoPlist(config: IosWorkManagerConfig) {
     val info = NSBundle.mainBundle.infoDictionary ?: run {
-        Logger.withTag(LOG_TAG).w {
-            "Info.plist not accessible via NSBundle.mainBundle — skipping background-tasks validation."
+        if (Platform.isDebugBinary) {
+            Logger.withTag(LOG_TAG).w {
+                "Info.plist not accessible via NSBundle.mainBundle — skipping background-tasks validation."
+            }
         }
         return
     }
@@ -34,9 +37,11 @@ internal fun validateInfoPlist(config: IosWorkManagerConfig) {
 
     if (config.enableBackgroundTasks) {
         if (config.bgProcessingTaskIdentifier.isEmpty()) {
-            Logger.withTag(LOG_TAG).e {
-                "enableBackgroundTasks=true but bgProcessingTaskIdentifier is empty. " +
-                    "Set it to match an entry in Info.plist → BGTaskSchedulerPermittedIdentifiers."
+            if (Platform.isDebugBinary) {
+                Logger.withTag(LOG_TAG).e {
+                    "enableBackgroundTasks=true but bgProcessingTaskIdentifier is empty. " +
+                        "Set it to match an entry in Info.plist → BGTaskSchedulerPermittedIdentifiers."
+                }
             }
         } else {
             requireBackgroundMode(backgroundModes, MODE_PROCESSING, capability = "BGProcessingTask")
@@ -58,7 +63,7 @@ private const val MODE_FETCH = "fetch"
 
 private fun requireBackgroundMode(modes: List<*>?, expected: String, capability: String) {
     val ok = modes?.any { (it as? String) == expected } == true
-    if (!ok) {
+    if (!ok && Platform.isDebugBinary) {
         Logger.withTag(LOG_TAG).e {
             "$capability requires Info.plist → UIBackgroundModes to contain \"$expected\". " +
                 "Add <string>$expected</string> under <key>UIBackgroundModes</key>."
@@ -68,7 +73,7 @@ private fun requireBackgroundMode(modes: List<*>?, expected: String, capability:
 
 private fun requirePermittedIdentifier(permittedIds: List<*>?, identifier: String) {
     val ok = permittedIds?.any { (it as? String) == identifier } == true
-    if (!ok) {
+    if (!ok && Platform.isDebugBinary) {
         Logger.withTag(LOG_TAG).e {
             "Info.plist → BGTaskSchedulerPermittedIdentifiers must contain \"$identifier\". " +
                 "Add it under <key>BGTaskSchedulerPermittedIdentifiers</key> as an <array> entry."

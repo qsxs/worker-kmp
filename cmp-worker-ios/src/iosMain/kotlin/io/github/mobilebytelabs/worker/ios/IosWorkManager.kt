@@ -1,3 +1,5 @@
+@file:OptIn(kotlin.experimental.ExperimentalNativeApi::class)
+
 package io.github.mobilebytelabs.worker.ios
 
 import co.touchlab.kermit.Logger
@@ -37,6 +39,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import platform.BackgroundTasks.BGTaskScheduler
+import kotlin.native.Platform
 import kotlin.time.Clock
 import kotlin.uuid.Uuid
 
@@ -254,8 +257,10 @@ class IosWorkManager internal constructor(
      */
     public fun cancelTask(identifier: String) {
         platform.BackgroundTasks.BGTaskScheduler.sharedScheduler.cancelTaskRequestWithIdentifier(identifier)
-        Logger.withTag("worker-kmp.ios").i {
-            "cancelTask(\"$identifier\") submitted to BGTaskScheduler"
+        if (Platform.isDebugBinary) {
+            Logger.withTag("worker-kmp.ios").i {
+                "cancelTask(\"$identifier\") submitted to BGTaskScheduler"
+            }
         }
     }
 
@@ -336,7 +341,9 @@ class IosWorkManager internal constructor(
                 throw e
             } catch (e: Exception) {
                 if (stateStore.finishWork(request.id, succeeded = false, outputData = WorkData.EMPTY)) {
-                    Logger.withTag("worker-kmp.ios").e(e) { "Unable to create worker '${request.workerClass}'" }
+                    if (Platform.isDebugBinary) {
+                        Logger.withTag("worker-kmp.ios").e(e) { "Unable to create worker '${request.workerClass}'" }
+                    }
                 }
                 return false
             }
@@ -432,7 +439,7 @@ class IosWorkManager internal constructor(
             wake.requiresCharging,
             wake.earliestAtEpochMillis,
         )
-        if (failure != null) {
+        if (failure != null && Platform.isDebugBinary) {
             Logger.withTag("worker-kmp.ios").e { "Unable to schedule background work: $failure" }
         }
     }
