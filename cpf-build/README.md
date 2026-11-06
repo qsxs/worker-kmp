@@ -87,10 +87,10 @@ Android KMP library、Compose Multiplatform、Compose compiler 插件，不使�
 
 坐标由本目录 `gradle.properties` 的 `cpf.group`、`cpf.version` 提供，默认值为：
 
-- core KMP 根坐标：`com.lihb.forks.worker:worker-kmp:4.0.8-cpf.3-android.7`。
-- core JVM 坐标：`com.lihb.forks.worker:worker-kmp-jvm:4.0.8-cpf.3-android.7`。
-- Android KMP 根坐标：`com.lihb.forks.worker:worker-android:4.0.8-cpf.3-android.7`。
-- Android 目标叶坐标：`com.lihb.forks.worker:worker-android-android:4.0.8-cpf.3-android.7`。
+- core KMP 根坐标：`com.lihb.forks.worker:worker-kmp:4.0.8-cpf.3-android.8`。
+- core JVM 坐标：`com.lihb.forks.worker:worker-kmp-jvm:4.0.8-cpf.3-android.8`。
+- Android KMP 根坐标：`com.lihb.forks.worker:worker-android:4.0.8-cpf.3-android.8`。
+- Android 目标叶坐标：`com.lihb.forks.worker:worker-android-android:4.0.8-cpf.3-android.8`。
 - 文件仓库：`cpf-build/build/repository`，发布仓库名称为 `Cpf`。
 
 Android 坐标按 KMP 的 `kotlinMultiplatform` / `android` publication 分别设置，
@@ -549,3 +549,13 @@ Core16项有效缓存报告、Android120项报告（含新增默认Failure为空
 
 `.3-android.7`四坐标同版本地发布exit0（3秒，44tasks中24executed、20UP-TO-DATE），16新制品与旧120个唯一摘要保持，变更Worker源码字节匹配，core生产Jar/sources测试隔离通过。
 独立AGP9.1/Gradle9.5 consumer从根GAV元数据检查、Kotlin编译、组装exit0（8秒，36tasks中4executed、32UP-TO-DATE），compile/runtime同版闭包通过；probe未改，行为依据D0b真实Worker结果测试，不宣称consumerAPK运行、设备或Native服务已验。App SDK与实际备份路径尚未切换，未推送。
+
+## D1pid 周期任务的显式 UUID
+
+`PeriodicWorkRequestBuilder.setId(Uuid)` 指定后续构建使用的 UUID，直到再次设置。
+默认每次构建生成新的 UUID。Android Host 回归以显式 UUID 入队首个周期任务，
+并检查连续两次 `UPDATE` 后的执行仍使用首个原生 UUID。
+
+Core 和 Android Host 三个测试类共 23 项通过。实际编译的 JVM JAR 公开了 `setId(kotlin.uuid.Uuid)`，
+原有 136 个制品的摘要均匹配。四个私有坐标预留版本 `4.0.8-cpf.3-android.8`。
+上游根工程的 API dump 留待向上游提交时同步，本批门禁使用独立 `cpf-build`。

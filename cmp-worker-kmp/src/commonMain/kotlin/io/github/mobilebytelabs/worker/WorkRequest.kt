@@ -10,8 +10,8 @@ import kotlin.uuid.Uuid
  * - [oneTimeWorkRequest] — runs the worker exactly once.
  * - [periodicWorkRequest] — runs the worker on a repeating schedule.
  *
- * @property id unique identifier for this request; auto-generated unless overridden via
- *   [OneTimeWorkRequestBuilder.setId].
+ * @property id 请求的唯一标识。默认自动生成，可通过 [OneTimeWorkRequestBuilder.setId]
+ *   或 [PeriodicWorkRequestBuilder.setId] 指定。
  * @property workerClass fully-qualified or simple class name of the [CoroutineWorker] to run.
  * @property inputData key-value payload passed to [CoroutineWorker.inputData].
  * @property constraints platform conditions that must be met before execution begins.
@@ -180,6 +180,7 @@ class PeriodicWorkRequestBuilder<T : CoroutineWorker>(
     private var inputData: WorkData = WorkData.EMPTY
     private var constraints: Constraints = Constraints.NONE
     private val tags: MutableSet<String> = mutableSetOf()
+    private var id: Uuid? = null
     private var initialDelay: Duration = Duration.ZERO
     private var quickRefresh: Boolean = false
 
@@ -191,6 +192,9 @@ class PeriodicWorkRequestBuilder<T : CoroutineWorker>(
 
     /** Adds a tag for grouping, observation, or bulk cancellation. */
     fun addTag(tag: String): PeriodicWorkRequestBuilder<T> = apply { tags.add(tag) }
+
+    /** 设置后续构建使用的 ID。未设置时每次构建生成一个新 ID。 */
+    fun setId(id: Uuid): PeriodicWorkRequestBuilder<T> = apply { this.id = id }
 
     /**
      * Sets the initial delay before the first attempt. See [OneTimeWorkRequestBuilder.setInitialDelay].
@@ -214,7 +218,7 @@ class PeriodicWorkRequestBuilder<T : CoroutineWorker>(
 
     /** Constructs the immutable [PeriodicWorkRequest]. */
     fun build(): PeriodicWorkRequest = PeriodicWorkRequest(
-        id = Uuid.random(),
+        id = id ?: Uuid.random(),
         workerClass = workerClass,
         inputData = inputData,
         constraints = constraints,

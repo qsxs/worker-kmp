@@ -117,12 +117,14 @@ internal fun delayedOneTime(payload: String, tag: String) = oneTimeWorkRequest<S
     addTag(tag)
 }
 
-internal fun delayedPeriodic(payload: String, tag: String) = periodicWorkRequest<SimpleSuccessWorker>(15.minutes) {
-    setInputData(workDataOf("payload" to payload))
-    setConstraints(Constraints { setRequiresCharging(true) })
-    setInitialDelay(1.hours)
-    addTag(tag)
-}
+internal fun delayedPeriodic(payload: String, tag: String, id: Uuid? = null) =
+    periodicWorkRequest<SimpleSuccessWorker>(15.minutes) {
+        if (id != null) setId(id)
+        setInputData(workDataOf("payload" to payload))
+        setConstraints(Constraints { setRequiresCharging(true) })
+        setInitialDelay(1.hours)
+        addTag(tag)
+    }
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [33])
@@ -157,7 +159,9 @@ class AndroidWorkManagerIntegrationTest {
 
     @Test
     fun periodicUpdate_replacesInputAndTagsButKeepsNativeExecutionIdentity() = runTest {
-        val first = delayedPeriodic("A", "tag-A")
+        val firstId = Uuid.parse("00000000-0000-4000-8000-000000000001")
+        val first = delayedPeriodic("A", "tag-A", id = firstId)
+        assertEquals(firstId, first.id)
         fixture.manager.enqueueUniquePeriodicWork("periodic-update", ExistingPeriodicWorkPolicy.KEEP, first)
         assertEquals(first.id.nativeId(), fixture.native.getWorkInfoById(first.id.nativeId()).get()?.id)
         fixture.runFirst(first.id)

@@ -2,9 +2,11 @@ package io.github.mobilebytelabs.worker
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.minutes
 import kotlin.uuid.ExperimentalUuidApi
+import kotlin.uuid.Uuid
 
 /**
  * Exercises the `block: ... -> Unit = {}` default-parameter lambda paths on
@@ -38,6 +40,27 @@ class WorkRequestDefaultBlockTest {
         assertEquals("NoOpWorker", r.workerClass)
         assertEquals(15.minutes, r.repeatInterval)
         assertEquals(WorkData.EMPTY, r.inputData)
+    }
+
+    @Test
+    fun periodicWorkRequestBuilder_defaultIdChangesEachBuild() {
+        val builder = PeriodicWorkRequestBuilder<NoOpWorker>("NoOpWorker", 15.minutes)
+
+        assertNotEquals(builder.build().id, builder.build().id)
+    }
+
+    @Test
+    fun periodicWorkRequestBuilder_explicitIdPersistsUntilOverridden() {
+        val builder = PeriodicWorkRequestBuilder<NoOpWorker>("NoOpWorker", 15.minutes)
+        val firstId = Uuid.parse("00000000-0000-4000-8000-000000000001")
+        val secondId = Uuid.parse("00000000-0000-4000-8000-000000000002")
+        val first = builder.setId(firstId).build()
+        val repeated = builder.build()
+        val updated = builder.setId(secondId).build()
+
+        assertEquals(firstId, first.id)
+        assertEquals(firstId, repeated.id)
+        assertEquals(secondId, updated.id)
     }
 
     @Test
