@@ -89,15 +89,17 @@ kotlin {
     }
 }
 
-// Windows 上直接测试 iOS 的公共状态源码，避免把它编进 JVM 主制品。
+// Windows 上直接测试 iOS 的公共状态和后台任务源码，避免把它们编进 JVM 主制品。
 val iosSources = layout.projectDirectory.dir("../cmp-worker-ios/src")
-val iosStatePackage = "kotlin/io/github/mobilebytelabs/worker/ios"
+val iosSourcePackage = "kotlin/io/github/mobilebytelabs/worker/ios"
 tasks.named<KotlinCompileTool>("compileTestKotlinJvm") {
     source(
-        iosSources.file("commonMain/$iosStatePackage/IosWorkStateStore.kt"),
-        iosSources.file("commonMain/$iosStatePackage/IosWorkPersistence.kt"),
-        iosSources.file("commonTest/$iosStatePackage/InMemoryIosWorkPersistence.kt"),
-        iosSources.file("commonTest/$iosStatePackage/IosWorkStateStoreTest.kt"),
+        iosSources.file("commonMain/$iosSourcePackage/IosWorkStateStore.kt"),
+        iosSources.file("commonMain/$iosSourcePackage/IosWorkPersistence.kt"),
+        iosSources.file("commonMain/$iosSourcePackage/BgTaskExecution.kt"),
+        iosSources.file("commonTest/$iosSourcePackage/InMemoryIosWorkPersistence.kt"),
+        iosSources.file("commonTest/$iosSourcePackage/IosWorkStateStoreTest.kt"),
+        iosSources.file("commonTest/$iosSourcePackage/BgTaskExecutionTest.kt"),
     )
 }
 

@@ -3,7 +3,6 @@
 package io.github.mobilebytelabs.worker.ios
 
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.launch
 import platform.BackgroundTasks.BGAppRefreshTaskRequest
 import platform.BackgroundTasks.BGProcessingTask
 import platform.BackgroundTasks.BGProcessingTaskRequest
@@ -24,13 +23,12 @@ internal fun registerBgProcessingTask(identifier: String, scope: CoroutineScope,
             bgTask?.setTaskCompletedWithSuccess(false)
             return@registerForTaskWithIdentifier
         }
-        val job = scope.launch {
-            val success = runCatching { onTask() }.getOrDefault(false)
-            task.setTaskCompletedWithSuccess(success)
-        }
-        task.expirationHandler = {
-            job.cancel()
-            task.setTaskCompletedWithSuccess(false)
+        launchBgTask(
+            scope,
+            installExpirationHandler = { task.expirationHandler = it },
+            complete = { task.setTaskCompletedWithSuccess(it) },
+        ) {
+            onTask()
         }
     }
 }
