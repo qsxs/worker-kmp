@@ -1,16 +1,23 @@
 package io.github.mobilebytelabs.worker.ios
 
+import io.github.mobilebytelabs.worker.ExistingWorkPolicy
 import io.github.mobilebytelabs.worker.WorkData
+import io.github.mobilebytelabs.worker.WorkEnqueueException
 import io.github.mobilebytelabs.worker.WorkInfo
 import io.github.mobilebytelabs.worker.WorkProgress
+import io.github.mobilebytelabs.worker.ios.IosWorkStateStore.UniqueWork
+import io.github.mobilebytelabs.worker.ios.IosWorkStateStore.WorkKind
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.uuid.Uuid
@@ -42,7 +49,7 @@ class IosWorkStateStoreTest {
         assertTrue(s.transitionToRunning(id, periodic = false))
         val output = WorkData("ready" to true)
         assertTrue(s.finishWork(id, succeeded = true, outputData = output))
-        val info = s.snapshot().getValue(id)
+        val info = assertNotNull(s.getById(id))
         assertEquals(WorkInfo.State.SUCCEEDED, info.state)
         assertEquals(output, info.outputData)
         assertFalse(s.cancelWork(id))
@@ -60,7 +67,7 @@ class IosWorkStateStoreTest {
         s.updateProgress(id, WorkProgress(25))
 
         assertTrue(s.cancelWork(id))
-        val cancelled = s.snapshot().getValue(id)
+        val cancelled = assertNotNull(s.getById(id))
         assertEquals(WorkInfo.State.CANCELLED, cancelled.state)
         assertEquals(1, cancelled.runAttemptCount)
         assertEquals(WorkProgress(25), cancelled.progress)
@@ -80,7 +87,7 @@ class IosWorkStateStoreTest {
         val s = store()
         val id = Uuid.random()
         s.initWork(id, emptySet())
-        val queued = s.snapshot().getValue(id)
+        val queued = assertNotNull(s.getById(id))
         assertFalse(s.finishWork(id, succeeded = false, outputData = WorkData.EMPTY))
         assertFalse(s.incrementAttempt(id))
         s.updateProgress(id, WorkProgress.COMPLETE)
@@ -103,7 +110,7 @@ class IosWorkStateStoreTest {
             }
             assertTrue(s.cancelWork(id, periodic = true))
             assertFalse(s.transitionToRunning(id, periodic = true))
-            val cancelled = s.snapshot().getValue(id)
+            val cancelled = assertNotNull(s.getById(id))
             assertEquals(WorkInfo.State.CANCELLED, cancelled.state)
             assertEquals(2, cancelled.runAttemptCount)
         }
@@ -144,5 +151,151 @@ class IosWorkStateStoreTest {
             val expected = if (finished) WorkInfo.State.SUCCEEDED else WorkInfo.State.CANCELLED
             assertEquals(expected, s.getById(id)?.state)
         }
+    }
+
+    @Test
+    fun uniqueKeep_concurrentRequestsReturnTheSameEffectiveId() = runTest {
+        repeat(20) {
+            val s = store()
+            val firstId = Uuid.random()
+            val secondId = Uuid.random()
+            val start = CompletableDeferred<Unit>()
+            val first = async(Dispatchers.Default) {
+                start.await()
+                s.enqueueUniqueOneTime("backup", ExistingWorkPolicy.KEEP, firstId, emptySet())
+            }
+            val second = async(Dispatchers.Default) {
+                start.await()
+                s.enqueueUniqueOneTime("backup", ExistingWorkPolicy.KEEP, secondId, emptySet())
+            }
+            start.complete(Unit)
+            val results = listOf(first.await(), second.await())
+            val accepted = results.single { it.enqueued }
+            assertEquals(listOf(accepted.id, accepted.id), results.map { it.id })
+            assertEquals(setOf(accepted.id), s.snapshot().keys)
+            assertEquals(listOf(accepted.id), s.observeByUniqueName("backup").first().map { it.id })
+        }
+    }
+
+    @Test
+    fun uniqueReplace_cancelsRunningWorkAndRejectsItsLateUpdates() = runTest {
+        val s = store()
+        val current = Uuid.random()
+        val replacement = Uuid.random()
+        s.enqueueUniqueOneTime("backup", ExistingWorkPolicy.KEEP, current, emptySet())
+        assertTrue(s.transitionToRunning(current, periodic = false))
+        s.updateProgress(current, WorkProgress(25))
+
+        val result = s.enqueueUniqueOneTime("backup", ExistingWorkPolicy.REPLACE, replacement, setOf("manual"))
+
+        assertEquals(replacement, result.id)
+        assertEquals(setOf(current), result.replacedIds)
+        assertEquals(WorkInfo.State.CANCELLED, s.getById(current)?.state)
+        assertEquals(WorkInfo.State.ENQUEUED, s.getById(replacement)?.state)
+        assertFalse(s.finishWork(current, succeeded = true, outputData = WorkData("late" to true)))
+        assertFalse(s.incrementAttempt(current))
+        s.updateProgress(current, WorkProgress.COMPLETE)
+        assertEquals(WorkProgress(25), s.getById(current)?.progress)
+        assertEquals(
+            listOf(replacement),
+            s.observeByUniqueName("backup").first().filterNot {
+                it.isFinished
+            }.map { it.id },
+        )
+    }
+
+    @Test
+    fun uniqueName_isReusableAfterCompletionAndKeepsOldTerminalState() = runTest {
+        val s = store()
+        val old = Uuid.random()
+        val replacement = Uuid.random()
+        val output = WorkData("done" to true)
+        s.enqueueUniqueOneTime("backup", ExistingWorkPolicy.KEEP, old, emptySet())
+        assertTrue(s.transitionToRunning(old, periodic = false))
+        assertTrue(s.finishWork(old, succeeded = true, outputData = output))
+        val finished = s.getById(old)
+
+        val result = s.enqueueUniqueOneTime("backup", ExistingWorkPolicy.REPLACE, replacement, emptySet())
+
+        assertTrue(result.enqueued)
+        assertEquals(emptySet(), result.replacedIds)
+        assertEquals(finished, s.getById(old))
+        assertEquals(setOf(old, replacement), s.observeByUniqueName("backup").first().map { it.id }.toSet())
+    }
+
+    @Test
+    fun uniqueReplace_replayOrConflictingIdCannotCancelCurrentWork() = runTest {
+        val s = store()
+        val current = Uuid.random()
+        val replaced = Uuid.random()
+        val other = Uuid.random()
+        s.enqueueUniqueOneTime("backup", ExistingWorkPolicy.KEEP, replaced, emptySet())
+        s.enqueueUniqueOneTime("backup", ExistingWorkPolicy.REPLACE, current, setOf("existing"))
+        s.enqueueUniqueOneTime("other", ExistingWorkPolicy.KEEP, other, emptySet())
+        val before = s.snapshot()
+
+        val replay = s.enqueueUniqueOneTime("backup", ExistingWorkPolicy.REPLACE, current, setOf("ignored"))
+        assertFalse(replay.enqueued)
+        assertEquals(current, replay.id)
+        assertFailsWith<WorkEnqueueException> {
+            s.enqueueUniqueOneTime("backup", ExistingWorkPolicy.REPLACE, replaced, emptySet())
+        }
+        assertFailsWith<WorkEnqueueException> {
+            s.enqueueUniqueOneTime("backup", ExistingWorkPolicy.REPLACE, other, emptySet())
+        }
+        assertEquals(before, s.snapshot())
+    }
+
+    @Test
+    fun uniqueOneTime_rejectsActivePeriodicNameEvenBetweenCycles() = runTest {
+        val s = store()
+        val periodic = Uuid.random()
+        val oneTime = Uuid.random()
+        s.initWork(periodic, setOf("nightly"), UniqueWork("backup", WorkKind.PERIODIC))
+        assertTrue(s.transitionToRunning(periodic, periodic = true))
+        assertTrue(s.finishWork(periodic, succeeded = true, outputData = WorkData.EMPTY))
+        val betweenCycles = s.getById(periodic)
+        val livePeriodic = setOf(periodic)
+
+        assertFailsWith<WorkEnqueueException> {
+            s.enqueueUniqueOneTime("backup", ExistingWorkPolicy.REPLACE, oneTime, emptySet(), livePeriodic)
+        }
+        assertEquals(betweenCycles, s.getById(periodic))
+        assertNull(s.getById(oneTime))
+        assertTrue(s.cancelWork(periodic, periodic = true))
+        assertTrue(s.enqueueUniqueOneTime("backup", ExistingWorkPolicy.KEEP, oneTime, emptySet()).enqueued)
+    }
+
+    @Test
+    fun uniqueAndTagFlowsKeepRestoredAndNamedWorkSeparate() = runTest {
+        val persistence = InMemoryIosWorkPersistence()
+        val legacy = Uuid.random()
+        val unique = Uuid.random()
+        persistence.save(WorkInfo(legacy, WorkInfo.State.ENQUEUED, tags = setOf("backup")))
+        val s = IosWorkStateStore(persistence)
+        s.restoreFromPersistence()
+        assertTrue(s.observeByUniqueName("backup").first().isEmpty())
+        assertEquals(listOf(legacy), s.observeByTag("backup").first().map { it.id })
+
+        s.enqueueUniqueOneTime("backup", ExistingWorkPolicy.REPLACE, unique, setOf("manual"))
+
+        assertEquals(WorkInfo.State.ENQUEUED, s.getById(legacy)?.state)
+        assertEquals(listOf(legacy), s.observeByTag("backup").first().map { it.id })
+        assertEquals(listOf(unique), s.observeByUniqueName("backup").first().map { it.id })
+        assertEquals(listOf(unique), s.observeByTag("manual").first().map { it.id })
+    }
+
+    @Test
+    fun unsupportedUniqueAppendPolicies_leaveStateUnchanged() = runTest {
+        val s = store()
+        val current = Uuid.random()
+        s.enqueueUniqueOneTime("backup", ExistingWorkPolicy.KEEP, current, emptySet())
+        val before = s.snapshot()
+        for (policy in listOf(ExistingWorkPolicy.APPEND, ExistingWorkPolicy.APPEND_OR_REPLACE)) {
+            assertFailsWith<WorkEnqueueException> {
+                s.enqueueUniqueOneTime("backup", policy, Uuid.random(), emptySet())
+            }
+        }
+        assertEquals(before, s.snapshot())
     }
 }

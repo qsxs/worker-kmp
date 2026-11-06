@@ -1,18 +1,23 @@
 package io.github.mobilebytelabs.worker.ios
 
+import co.touchlab.kermit.Logger
 import io.github.mobilebytelabs.worker.BackoffPolicy
 import io.github.mobilebytelabs.worker.Constraints
 import io.github.mobilebytelabs.worker.ExistingPeriodicWorkPolicy
+import io.github.mobilebytelabs.worker.ExistingWorkPolicy
 import io.github.mobilebytelabs.worker.ExperimentalWorkerApi
 import io.github.mobilebytelabs.worker.NetworkType
 import io.github.mobilebytelabs.worker.OneTimeWorkRequest
 import io.github.mobilebytelabs.worker.PeriodicWorkRequest
 import io.github.mobilebytelabs.worker.RetryConfig
 import io.github.mobilebytelabs.worker.WorkData
+import io.github.mobilebytelabs.worker.WorkEnqueueException
 import io.github.mobilebytelabs.worker.WorkInfo
 import io.github.mobilebytelabs.worker.WorkManager
 import io.github.mobilebytelabs.worker.WorkRequest
 import io.github.mobilebytelabs.worker.WorkResult
+import io.github.mobilebytelabs.worker.ios.IosWorkStateStore.UniqueWork
+import io.github.mobilebytelabs.worker.ios.IosWorkStateStore.WorkKind
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
@@ -65,13 +70,31 @@ class IosWorkManager internal constructor(
     }
 
     override suspend fun enqueue(request: OneTimeWorkRequest): Uuid {
-        registerWork(request, request.tags) {
-            val delayMs = request.initialDelay.inWholeMilliseconds
-            if (delayMs > 0) delay(delayMs)
-            awaitConstraintsSatisfied(request.constraints)
-            executeWorker(request)
-        }?.start()
+        registerWork(request) { executeOneTime(request) }?.start()
         return request.id
+    }
+
+    override suspend fun enqueueUniqueWork(
+        uniqueWorkName: String,
+        existingWorkPolicy: ExistingWorkPolicy,
+        request: OneTimeWorkRequest,
+    ): Uuid {
+        val (id, job, replacedJobs) = mutex.withLock {
+            val livePeriodicIds = jobRegistry.filterValues { it.periodic && !it.job.isCompleted }.keys
+            val result = stateStore.enqueueUniqueOneTime(
+                uniqueWorkName,
+                existingWorkPolicy,
+                request.id,
+                request.tags,
+                livePeriodicIds,
+            )
+            val oldJobs = result.replacedIds.mapNotNull { jobRegistry.remove(it)?.job }
+            val newJob = if (result.enqueued) registerJob(request) { executeOneTime(request) } else null
+            Triple(result.id, newJob, oldJobs)
+        }
+        replacedJobs.forEach { it.cancel() }
+        job?.start()
+        return id
     }
 
     override suspend fun enqueueUniquePeriodicWork(
@@ -79,12 +102,15 @@ class IosWorkManager internal constructor(
         existingPeriodicWorkPolicy: ExistingPeriodicWorkPolicy,
         request: PeriodicWorkRequest,
     ): Uuid {
-        val replaceTag = uniqueWorkName.takeIf { existingPeriodicWorkPolicy == ExistingPeriodicWorkPolicy.REPLACE }
-        val job = registerWork(request, request.tags + uniqueWorkName, replaceTag) {
+        val job = registerWork(
+            request,
+            UniqueWork(uniqueWorkName, WorkKind.PERIODIC),
+            replace = existingPeriodicWorkPolicy == ExistingPeriodicWorkPolicy.REPLACE,
+        ) {
             val delayMs = request.initialDelay.inWholeMilliseconds
             if (delayMs > 0) delay(delayMs)
             while (isActive) {
-                executeWorker(request)
+                if (!executeWorker(request)) break
                 delay(request.repeatInterval.inWholeMilliseconds)
             }
         } ?: return request.id
@@ -104,43 +130,63 @@ class IosWorkManager internal constructor(
 
     private suspend fun registerWork(
         request: WorkRequest,
-        tags: Set<String>,
-        replaceTag: String? = null,
+        uniqueWork: UniqueWork? = null,
+        replace: Boolean = false,
         execute: suspend CoroutineScope.() -> Unit,
     ): Job? {
         val (job, replacedJobs) = mutex.withLock {
             val snapshot = stateStore.snapshot()
             val existing = snapshot[request.id]
+            if (existing != null && existing.uniqueWork != uniqueWork) {
+                throw WorkEnqueueException("Work ID ${request.id} is already used by a different work identity")
+            }
             if (request.id in jobRegistry) return@withLock null
-            if (existing != null && existing.state != WorkInfo.State.ENQUEUED) return@withLock null
-            val previousJobs = if (replaceTag == null) {
+            if (existing != null && existing.info.state != WorkInfo.State.ENQUEUED) return@withLock null
+            if (uniqueWork != null) {
+                val oneTime = uniqueWork.copy(kind = WorkKind.ONE_TIME)
+                if (snapshot.values.any { it.uniqueWork == oneTime && !it.info.isFinished }) {
+                    throw WorkEnqueueException(
+                        "Unique work '${uniqueWork.name}' is already used by active one-time work",
+                    )
+                }
+            }
+            val previousJobs = if (uniqueWork == null || !replace) {
                 emptyList()
             } else {
                 snapshot.values
-                    .filter { it.id != request.id && replaceTag in it.tags }
-                    .mapNotNull { markCancelled(it.id) }
+                    .filter { it.info.id != request.id && it.uniqueWork == uniqueWork }
+                    .mapNotNull { markCancelled(it.info.id) }
             }
-            stateStore.initWork(request.id, tags)
+            // 维持周期任务按旧名称标签查询和取消的行为；唯一调度按显式身份匹配。
+            val tags = if (uniqueWork == null) request.tags else request.tags + uniqueWork.name
+            val work = stateStore.initWork(request.id, tags, uniqueWork)
             // 空快照时，恢复可能先于 initWork 写入同一个 ID。
-            if (stateStore.getById(request.id)?.state != WorkInfo.State.ENQUEUED) {
+            if (work.uniqueWork != uniqueWork) {
+                throw WorkEnqueueException("Work ID ${request.id} was restored without this work identity")
+            }
+            if (work.info.state != WorkInfo.State.ENQUEUED) {
                 return@withLock null to previousJobs
             }
-            val newJob = scope.launch(start = CoroutineStart.LAZY) {
-                try {
-                    execute()
-                } finally {
-                    val currentJob = coroutineContext[Job]
-                    withContext(NonCancellable) {
-                        mutex.withLock {
-                            if (jobRegistry[request.id]?.job === currentJob) jobRegistry.remove(request.id)
-                        }
+            registerJob(request, execute) to previousJobs
+        } ?: return null
+        replacedJobs.forEach { it.cancel() }
+        return job
+    }
+
+    private fun registerJob(request: WorkRequest, execute: suspend CoroutineScope.() -> Unit): Job {
+        val job = scope.launch(start = CoroutineStart.LAZY) {
+            try {
+                execute()
+            } finally {
+                val currentJob = coroutineContext[Job]
+                withContext(NonCancellable) {
+                    mutex.withLock {
+                        if (jobRegistry[request.id]?.job === currentJob) jobRegistry.remove(request.id)
                     }
                 }
             }
-            jobRegistry[request.id] = RegisteredWork(newJob, request is PeriodicWorkRequest)
-            newJob to previousJobs
-        } ?: return null
-        replacedJobs.forEach { it.cancel() }
+        }
+        jobRegistry[request.id] = RegisteredWork(job, request is PeriodicWorkRequest)
         return job
     }
 
@@ -158,20 +204,9 @@ class IosWorkManager internal constructor(
 
     override suspend fun cancelAllWorkByTag(tag: String) {
         stateStore.snapshot().values
-            .filter { tag in it.tags }
-            .forEach { cancelWorkById(it.id) }
+            .filter { tag in it.info.tags }
+            .forEach { cancelWorkById(it.info.id) }
     }
-
-    // cross-platform-worker-parity-audit sub-plan 03 (closes G2) — iOS impl delegates to
-    // plain enqueue; iOS BGTaskScheduler doesn't have a name-keyed unique-work primitive,
-    // so REPLACE/KEEP/APPEND semantics are best-effort: REPLACE acts like a fresh enqueue,
-    // KEEP doesn't dedup (would require cross-restart state mapping name→Uuid), APPEND/
-    // APPEND_OR_REPLACE same. AndroidX-level semantics live on the Android actual only.
-    override suspend fun enqueueUniqueWork(
-        uniqueWorkName: String,
-        existingWorkPolicy: io.github.mobilebytelabs.worker.ExistingWorkPolicy,
-        request: io.github.mobilebytelabs.worker.OneTimeWorkRequest,
-    ): Uuid = enqueue(request)
 
     /**
      * Cancel a pending BGTaskScheduler task by its registered identifier.
@@ -189,23 +224,27 @@ class IosWorkManager internal constructor(
      */
     public fun cancelTask(identifier: String) {
         platform.BackgroundTasks.BGTaskScheduler.sharedScheduler.cancelTaskRequestWithIdentifier(identifier)
-        co.touchlab.kermit.Logger.withTag("worker-kmp.ios").i {
+        Logger.withTag("worker-kmp.ios").i {
             "cancelTask(\"$identifier\") submitted to BGTaskScheduler"
         }
     }
 
     override fun getWorkInfosByTag(tag: String): Flow<List<WorkInfo>> = stateStore.observeByTag(tag)
 
-    // worker-kmp-single-api-completion sub-plan 01 — uniqueWorkName is added to the work's
-    // tag set at enqueue time (see line ~84), so unique-work observation reduces to tag
-    // observation with the uniqueWorkName as the tag.
     override fun getWorkInfosForUniqueWorkFlow(uniqueWorkName: String): Flow<List<WorkInfo>> =
-        stateStore.observeByTag(uniqueWorkName)
+        stateStore.observeByUniqueName(uniqueWorkName)
 
     override suspend fun getWorkInfoById(id: Uuid): WorkInfo? = stateStore.getById(id)
 
     fun shutdown() {
         scope.coroutineContext[Job]?.cancel()
+    }
+
+    private suspend fun executeOneTime(request: OneTimeWorkRequest) {
+        val delayMs = request.initialDelay.inWholeMilliseconds
+        if (delayMs > 0) delay(delayMs)
+        awaitConstraintsSatisfied(request.constraints)
+        executeWorker(request)
     }
 
     // Waits until all constraints in [constraints] are satisfied.
@@ -238,21 +277,30 @@ class IosWorkManager internal constructor(
         return true
     }
 
-    private suspend fun executeWorker(request: WorkRequest) {
+    private suspend fun executeWorker(request: WorkRequest): Boolean {
+        if (!stateStore.transitionToRunning(request.id, periodic = request is PeriodicWorkRequest)) return false
+
         val context = IosWorkerContext(
             id = request.id,
             inputData = request.inputData,
             tags = request.tags,
             stateStore = stateStore,
         )
-        val worker = workerFactory.create(request.workerClass, context)
-        if (!stateStore.transitionToRunning(request.id, periodic = request is PeriodicWorkRequest)) return
-
-        var attempt = 0
-        var result: WorkResult
         try {
+            val worker = try {
+                workerFactory.create(request.workerClass, context)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (stateStore.finishWork(request.id, succeeded = false, outputData = WorkData.EMPTY)) {
+                    Logger.withTag("worker-kmp.ios").e(e) { "Unable to create worker '${request.workerClass}'" }
+                }
+                return false
+            }
+            var attempt = 0
+            var result: WorkResult
             do {
-                if (!stateStore.incrementAttempt(request.id)) return
+                if (!stateStore.incrementAttempt(request.id)) return false
                 result = try {
                     worker.doWork()
                 } catch (e: CancellationException) {
@@ -269,7 +317,7 @@ class IosWorkManager internal constructor(
                 }
             } while (true)
 
-            stateStore.finishWork(
+            return stateStore.finishWork(
                 request.id,
                 succeeded = result is WorkResult.Success,
                 outputData = (result as? WorkResult.Success)?.outputData ?: WorkData.EMPTY,
@@ -284,13 +332,14 @@ class IosWorkManager internal constructor(
     // Called by the BGProcessingTask handler when iOS wakes the app in the background.
     private suspend fun runPendingWork(): Boolean {
         val pending = stateStore.snapshot().values
-            .filter { it.state == WorkInfo.State.ENQUEUED }
+            .filter { it.info.state == WorkInfo.State.ENQUEUED }
         if (pending.isEmpty()) return true
-        pending.forEach { info ->
+        pending.forEach { work ->
+            val id = work.info.id
             mutex.withLock {
-                if (info.id !in jobRegistry) {
+                if (id !in jobRegistry) {
                     // 仅重新保存仍处于排队状态的孤立记录，旧快照可能已被取消。
-                    stateStore.refreshEnqueuedWork(info.id)
+                    stateStore.refreshEnqueuedWork(id)
                 }
             }
         }

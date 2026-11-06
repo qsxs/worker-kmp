@@ -5,10 +5,12 @@ package io.github.mobilebytelabs.worker.ios
 import io.github.mobilebytelabs.worker.BackoffPolicy
 import io.github.mobilebytelabs.worker.CoroutineWorker
 import io.github.mobilebytelabs.worker.ExistingPeriodicWorkPolicy
+import io.github.mobilebytelabs.worker.ExistingWorkPolicy
 import io.github.mobilebytelabs.worker.OneTimeWorkRequestBuilder
 import io.github.mobilebytelabs.worker.PeriodicWorkRequestBuilder
 import io.github.mobilebytelabs.worker.RetryConfig
 import io.github.mobilebytelabs.worker.WorkData
+import io.github.mobilebytelabs.worker.WorkEnqueueException
 import io.github.mobilebytelabs.worker.WorkInfo
 import io.github.mobilebytelabs.worker.WorkProgress
 import io.github.mobilebytelabs.worker.WorkResult
@@ -19,6 +21,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
@@ -30,6 +34,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.milliseconds
@@ -148,6 +153,71 @@ class IosWorkManagerTest {
     }
 
     @Test
+    fun enqueueUniqueWork_keepsOrReplacesTheRegisteredWorker() = runTest {
+        val started = Channel<Uuid>(Channel.UNLIMITED)
+        val factory = object : IosWorkerFactory {
+            override fun create(workerClass: String, context: WorkerContext): CoroutineWorker =
+                object : CoroutineWorker(context) {
+                    override suspend fun doWork(): WorkResult {
+                        started.send(context.id)
+                        awaitCancellation()
+                    }
+                }
+        }
+        val wm = IosWorkManager(workerFactory = factory, persistence = NoOpIosWorkPersistence)
+        val name = "backup"
+        val builder = OneTimeWorkRequestBuilder<SlowIosWorker>("unique-running").addTag("manual")
+        val first = builder.build()
+        val dropped = builder.setId(Uuid.random()).build()
+        val replacement = builder.setId(Uuid.random()).build()
+        try {
+            assertEquals(first.id, wm.enqueueUniqueWork(name, ExistingWorkPolicy.KEEP, first))
+            assertEquals(first.id, withContext(Dispatchers.Default) { withTimeout(2_000) { started.receive() } })
+            assertEquals(first.id, wm.enqueueUniqueWork(name, ExistingWorkPolicy.KEEP, dropped))
+            assertNull(wm.getWorkInfoById(dropped.id))
+
+            val periodic = PeriodicWorkRequestBuilder<SlowIosWorker>("periodic", repeatInterval = 5.minutes).build()
+            assertFailsWith<WorkEnqueueException> {
+                wm.enqueueUniquePeriodicWork(name, ExistingPeriodicWorkPolicy.REPLACE, periodic)
+            }
+            assertNull(wm.getWorkInfoById(periodic.id))
+            assertEquals(WorkInfo.State.RUNNING, wm.getWorkInfoById(first.id)?.state)
+
+            assertEquals(replacement.id, wm.enqueueUniqueWork(name, ExistingWorkPolicy.REPLACE, replacement))
+            assertEquals(replacement.id, withContext(Dispatchers.Default) { withTimeout(2_000) { started.receive() } })
+            assertEquals(WorkInfo.State.CANCELLED, wm.getWorkInfoById(first.id)?.state)
+            val named = wm.getWorkInfosForUniqueWorkFlow(name).first()
+            assertEquals(listOf(replacement.id), named.filterNot { it.isFinished }.map { it.id })
+            assertTrue(wm.getWorkInfosByTag(name).first().isEmpty())
+            assertEquals(setOf(first.id, replacement.id), wm.getWorkInfosByTag("manual").first().map { it.id }.toSet())
+        } finally {
+            wm.shutdown()
+            started.cancel()
+        }
+    }
+
+    @Test
+    fun enqueueUniqueWork_unknownWorkerFailsAndKeepCanRunNextRequest() = runTest {
+        val wm = workManager(persistence = NoOpIosWorkPersistence)
+        val name = "factory-retry"
+        val unknown = OneTimeWorkRequestBuilder<SuccessIosWorker>("unknown-worker").build()
+        val registered = OneTimeWorkRequestBuilder<SuccessIosWorker>(SuccessIosWorker::class.simpleName!!).build()
+        try {
+            assertEquals(unknown.id, wm.enqueueUniqueWork(name, ExistingWorkPolicy.KEEP, unknown))
+            eventually { wm.getWorkInfoById(unknown.id)?.state == WorkInfo.State.FAILED }
+            assertEquals(WorkInfo.State.FAILED, wm.getWorkInfoById(unknown.id)?.state)
+            assertEquals(WorkData.EMPTY, wm.getWorkInfoById(unknown.id)?.outputData)
+
+            assertEquals(registered.id, wm.enqueueUniqueWork(name, ExistingWorkPolicy.KEEP, registered))
+            eventually { wm.getWorkInfoById(registered.id)?.state == WorkInfo.State.SUCCEEDED }
+            assertEquals(WorkInfo.State.SUCCEEDED, wm.getWorkInfoById(registered.id)?.state)
+            assertEquals(WorkInfo.State.FAILED, wm.getWorkInfoById(unknown.id)?.state)
+        } finally {
+            wm.shutdown()
+        }
+    }
+
+    @Test
     fun getWorkInfoById_returnsNullForUnknown() = runTest {
         val wm = workManager()
         assertNull(wm.getWorkInfoById(Uuid.random()))
@@ -258,6 +328,10 @@ class IosWorkManagerTest {
         val replacement = builder.build()
         val name = "replace-ios"
         val policy = ExistingPeriodicWorkPolicy.REPLACE
+        val taggedOnly = OneTimeWorkRequestBuilder<SlowIosWorker>(SlowIosWorker::class.simpleName!!)
+            .setInitialDelay(5.minutes)
+            .addTag(name)
+            .build()
         val activeIds = mutableListOf<Set<Uuid>>()
         backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
             wm.getWorkInfosForUniqueWorkFlow(name).collect { work ->
@@ -265,6 +339,7 @@ class IosWorkManagerTest {
             }
         }
         try {
+            wm.enqueue(taggedOnly)
             wm.enqueueUniquePeriodicWork(name, policy, previous)
             wm.enqueueUniquePeriodicWork(name, policy, replacement)
             assertEquals(WorkInfo.State.CANCELLED, wm.getWorkInfoById(previous.id)?.state)
@@ -274,7 +349,14 @@ class IosWorkManagerTest {
 
             assertEquals(WorkInfo.State.CANCELLED, wm.getWorkInfoById(previous.id)?.state)
             assertEquals(WorkInfo.State.ENQUEUED, wm.getWorkInfoById(replacement.id)?.state)
+            assertEquals(WorkInfo.State.ENQUEUED, wm.getWorkInfoById(taggedOnly.id)?.state)
+            val taggedIds = wm.getWorkInfosByTag(name).first().map { it.id }.toSet()
+            assertEquals(setOf(previous.id, replacement.id, taggedOnly.id), taggedIds)
             assertEquals(listOf(setOf(previous.id), setOf(replacement.id)), activeIds.filter { it.isNotEmpty() })
+
+            wm.cancelAllWorkByTag(name)
+            assertEquals(WorkInfo.State.CANCELLED, wm.getWorkInfoById(replacement.id)?.state)
+            assertEquals(WorkInfo.State.CANCELLED, wm.getWorkInfoById(taggedOnly.id)?.state)
         } finally {
             wm.shutdown()
         }
