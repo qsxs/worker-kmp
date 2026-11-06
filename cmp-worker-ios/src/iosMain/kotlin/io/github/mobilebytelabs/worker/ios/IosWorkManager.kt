@@ -25,7 +25,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
@@ -34,6 +36,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import platform.BackgroundTasks.BGTaskScheduler
 import kotlin.time.Clock
 import kotlin.uuid.Uuid
 
@@ -53,9 +56,14 @@ class IosWorkManager internal constructor(
         SupervisorJob() + Dispatchers.Default + CoroutineName("IosWorkManager"),
     )
     private val mutex = Mutex()
-    private val jobRegistry = mutableMapOf<Uuid, RegisteredWork>()
+    private val schedulingMutex = Mutex()
+    private val jobRegistry = mutableMapOf<Uuid, Job>()
     private val stateStore = IosWorkStateStore(persistence = persistence, scope = scope)
-    private val restore = scope.async { stateStore.restoreFromPersistence() }
+    private val restore = scope.async {
+        stateStore.restoreFromPersistence()
+        stateStore.prepareRestoredDeadlines(nowEpochMillis())
+        stateStore.flush()
+    }
 
     init {
         if (config.enableBackgroundTasks) {
@@ -65,11 +73,16 @@ class IosWorkManager internal constructor(
             ) {
                 runPendingWork()
             }
+            scope.launch {
+                restore.await()
+                schedulePendingWork()
+            }
         }
     }
 
     override suspend fun enqueue(request: OneTimeWorkRequest): Uuid {
         registerWork(request) { executeOneTime(request) }?.start()
+        schedulePendingWork()
         return request.id
     }
 
@@ -80,8 +93,10 @@ class IosWorkManager internal constructor(
     ): Uuid {
         existingWorkPolicy.checkIosOneTimePolicy()
         restore.await()
-        val (id, job, replacedJobs) = mutex.withLock {
-            val livePeriodicIds = jobRegistry.filterValues { it.periodic && !it.job.isCompleted }.keys
+        val (id, job) = mutex.withLock {
+            val livePeriodicIds = jobRegistry.filter { (id, job) ->
+                stateStore.snapshot()[id]?.request is PeriodicWorkRequest && !job.isCompleted
+            }.keys
             val result = stateStore.enqueueUniqueOneTime(
                 uniqueWorkName,
                 existingWorkPolicy,
@@ -91,12 +106,14 @@ class IosWorkManager internal constructor(
                 request,
                 nextRunAtEpochMillis = iosInitialDueAtEpochMillis(nowEpochMillis(), request),
             )
-            val oldJobs = result.replacedIds.mapNotNull { jobRegistry.remove(it)?.job }
+            val oldJobs = result.replacedIds.mapNotNull { jobRegistry.remove(it) }
+            oldJobs.forEach { it.cancel() }
+            stateStore.flush()
             val newJob = if (result.enqueued) registerJob(request) { executeOneTime(request) } else null
-            Triple(result.id, newJob, oldJobs)
+            result.id to newJob
         }
-        replacedJobs.forEach { it.cancel() }
         job?.start()
+        schedulePendingWork()
         return id
     }
 
@@ -129,6 +146,7 @@ class IosWorkManager internal constructor(
             )
         }
         job.start()
+        schedulePendingWork()
         return request.id
     }
 
@@ -139,7 +157,7 @@ class IosWorkManager internal constructor(
         execute: suspend CoroutineScope.() -> Unit,
     ): Job? {
         restore.await()
-        val (job, replacedJobs) = mutex.withLock {
+        val job = mutex.withLock {
             val snapshot = stateStore.snapshot()
             val existing = snapshot[request.id]
             if (existing != null && existing.uniqueWork != uniqueWork) {
@@ -173,9 +191,10 @@ class IosWorkManager internal constructor(
                 request,
                 nextRunAtEpochMillis = iosInitialDueAtEpochMillis(nowEpochMillis(), request),
             )
-            registerJob(request, execute) to previousJobs
+            previousJobs.forEach { it.cancel() }
+            stateStore.flush()
+            registerJob(request, execute)
         } ?: return null
-        replacedJobs.forEach { it.cancel() }
         return job
     }
 
@@ -187,12 +206,14 @@ class IosWorkManager internal constructor(
                 val currentJob = coroutineContext[Job]
                 withContext(NonCancellable) {
                     mutex.withLock {
-                        if (jobRegistry[request.id]?.job === currentJob) jobRegistry.remove(request.id)
+                        if (jobRegistry[request.id] === currentJob) jobRegistry.remove(request.id)
                     }
+                    stateStore.persistCurrent(request.id)
+                    schedulePendingWork()
                 }
             }
         }
-        jobRegistry[request.id] = RegisteredWork(job, request is PeriodicWorkRequest)
+        jobRegistry[request.id] = job
         return job
     }
 
@@ -200,14 +221,14 @@ class IosWorkManager internal constructor(
         restore.await()
         val job = mutex.withLock { markCancelled(id) }
         job?.cancel()
+        stateStore.persistCurrent(id)
+        schedulePendingWork()
     }
 
     private fun markCancelled(id: Uuid): Job? {
-        val work = jobRegistry[id]
         // 周期任务在两轮之间也可能显示为 SUCCEEDED 或 FAILED。
-        val periodic = (work != null && work.periodic && !work.job.isCompleted) ||
-            stateStore.snapshot()[id]?.request is PeriodicWorkRequest
-        return if (stateStore.cancelWork(id, periodic)) jobRegistry.remove(id)?.job else null
+        val periodic = stateStore.snapshot()[id]?.request is PeriodicWorkRequest
+        return if (stateStore.cancelWork(id, periodic)) jobRegistry.remove(id) else null
     }
 
     override suspend fun cancelAllWorkByTag(tag: String) {
@@ -298,7 +319,8 @@ class IosWorkManager internal constructor(
         return true
     }
 
-    private suspend fun executeWorker(request: WorkRequest): Boolean {
+    private suspend fun executeWorker(request: WorkRequest, background: Boolean = false): Boolean {
+        kotlin.coroutines.coroutineContext.ensureActive()
         if (!stateStore.transitionToRunning(request.id, periodic = request is PeriodicWorkRequest)) return false
 
         val context = IosWorkerContext(
@@ -318,12 +340,21 @@ class IosWorkManager internal constructor(
                 }
                 return false
             }
-            var attempt = 0
+            var attempt = if (request is PeriodicWorkRequest) {
+                0
+            } else {
+                (stateStore.getById(request.id)?.runAttemptCount ?: 0).coerceAtLeast(0)
+            }
+            if (attempt >= request.retryConfig.maxAttempts) {
+                stateStore.finishWork(request.id, succeeded = false, outputData = WorkData.EMPTY)
+                return false
+            }
             var result: WorkResult
             do {
+                kotlin.coroutines.coroutineContext.ensureActive()
                 if (!stateStore.incrementAttempt(request.id)) return false
                 result = try {
-                    worker.doWork()
+                    coroutineScope { worker.doWork() }.also { kotlin.coroutines.coroutineContext.ensureActive() }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
@@ -350,40 +381,61 @@ class IosWorkManager internal constructor(
             val nextRunAt = (request as? PeriodicWorkRequest)?.let {
                 iosDueAtEpochMillis(nowEpochMillis(), it.repeatInterval)
             }
-            return stateStore.finishWork(
+            kotlin.coroutines.coroutineContext.ensureActive()
+            val completed = stateStore.finishWork(
                 request.id,
                 succeeded = result is WorkResult.Success,
                 outputData = (result as? WorkResult.Success)?.outputData ?: WorkData.EMPTY,
                 nextRunAtEpochMillis = nextRunAt,
             )
+            if (background) stateStore.persistCurrent(request.id)
+            return completed
         } catch (e: CancellationException) {
-            stateStore.cancelWork(request.id)
+            if (!background) stateStore.cancelWork(request.id)
             throw e
         }
     }
 
-    // Runs all ENQUEUED work that has unsatisfied constraints.
-    // Called by the BGProcessingTask handler when iOS wakes the app in the background.
-    private suspend fun runPendingWork(): Boolean {
+    /** 供已持有系统 BGTask 注册权的宿主调用；执行与清理属于本次调用协程。 */
+    suspend fun runPendingWork(): Boolean {
         restore.await()
-        val pending = stateStore.snapshot().values
-            .filter { it.info.state == WorkInfo.State.ENQUEUED }
-        if (pending.isEmpty()) return true
-        pending.forEach { work ->
-            val id = work.info.id
-            mutex.withLock {
-                if (id !in jobRegistry) {
-                    // 仅重新保存仍处于排队状态的孤立记录，旧快照可能已被取消。
-                    stateStore.refreshEnqueuedWork(id)
-                }
+        return try {
+            IosPendingWorkRunner(
+                stateStore,
+                mutex,
+                jobRegistry,
+                ::nowEpochMillis,
+                { iosBackgroundConstraintsSatisfied(it.constraints) },
+            ) { request ->
+                executeWorker(request, background = true)
+                stateStore.getById(request.id)?.state == WorkInfo.State.SUCCEEDED
+            }.run()
+        } finally {
+            withContext(NonCancellable) {
+                stateStore.flush()
+                schedulePendingWork()
             }
         }
-        // Allow launched coroutines a moment to start — BG task has limited time budget.
-        delay(100)
-        return true
     }
 
-    private data class RegisteredWork(val job: Job, val periodic: Boolean)
+    /** 系统调度仅给出最早执行时间，实际回调仍按逐项截止与设备状态接纳。 */
+    private suspend fun schedulePendingWork(): Unit = schedulingMutex.withLock {
+        if (!config.enableBackgroundTasks) return@withLock
+        val wake = iosBackgroundWake(stateStore.snapshot().values, nowEpochMillis())
+        if (wake == null) {
+            BGTaskScheduler.sharedScheduler.cancelTaskRequestWithIdentifier(config.bgProcessingTaskIdentifier)
+            return@withLock
+        }
+        val failure = scheduleBgProcessingTask(
+            config.bgProcessingTaskIdentifier,
+            wake.requiresNetwork,
+            wake.requiresCharging,
+            wake.earliestAtEpochMillis,
+        )
+        if (failure != null) {
+            Logger.withTag("worker-kmp.ios").e { "Unable to schedule background work: $failure" }
+        }
+    }
 }
 
 private fun nowEpochMillis(): Long = Clock.System.now().toEpochMilliseconds()

@@ -32,7 +32,11 @@ internal class IosWorkStateStore(
             val restored = saved.associate { work ->
                 val info = work.info
                 val state = if (info.state == WorkInfo.State.RUNNING) WorkInfo.State.ENQUEUED else info.state
-                info.id to work.copy(info = info.copy(state = state))
+                // 已进入执行的任务已经等完初始延迟；保留重试截止，否则立即允许恢复。
+                val dueAt = work.nextRunAtEpochMillis ?: 0L.takeIf {
+                    info.state == WorkInfo.State.RUNNING && work.request != null
+                }
+                info.id to work.copy(info = info.copy(state = state), nextRunAtEpochMillis = dueAt)
             }
             store.compareAndSet(emptyMap(), restored)
         }
@@ -186,6 +190,45 @@ internal class IosWorkStateStore(
 
     fun snapshot(): Map<Uuid, StoredWork> = store.value
 
+    /** 后台执行窗口结束后只重新排队未被显式取消的运行记录。 */
+    fun requeueInterrupted(id: Uuid, now: Long): Boolean = updateRunningRecord(id) { work ->
+        work.copy(
+            info = work.info.copy(state = WorkInfo.State.ENQUEUED),
+            nextRunAtEpochMillis = work.nextRunAtEpochMillis ?: now,
+        )
+    }
+
+    /** 补齐旧版完整请求缺少的截止时间；纯状态条目保持只读兼容。 */
+    fun prepareRestoredDeadlines(now: Long) {
+        store.value.keys.forEach { id ->
+            updateRecord(id) { work ->
+                val request = work.request
+                if (request == null || work.nextRunAtEpochMillis != null ||
+                    work.info.state == WorkInfo.State.CANCELLED
+                ) {
+                    null
+                } else {
+                    val dueAt = when {
+                        work.info.state == WorkInfo.State.ENQUEUED && work.info.runAttemptCount > 0 -> now
+
+                        work.info.state == WorkInfo.State.ENQUEUED -> iosInitialDueAtEpochMillis(now, request)
+
+                        request is PeriodicWorkRequest && work.info.isFinished ->
+                            iosDueAtEpochMillis(now, request.repeatInterval)
+
+                        else -> null
+                    }
+                    dueAt?.let { work.copy(nextRunAtEpochMillis = it) }
+                }
+            }
+        }
+    }
+
+    /** 返回前同步保存当前快照，排队的旧异步写也只会读取当前记录。 */
+    suspend fun flush() {
+        store.value.keys.forEach { persistCurrent(it) }
+    }
+
     private fun updateRunningWork(id: Uuid, transform: (WorkInfo) -> WorkInfo): Boolean =
         updateWork(id) { info -> info.takeIf { it.state == WorkInfo.State.RUNNING }?.let(transform) }
 
@@ -216,7 +259,7 @@ internal class IosWorkStateStore(
         scope?.launch { persistCurrent(id) }
     }
 
-    private suspend fun persistCurrent(id: Uuid) {
+    internal suspend fun persistCurrent(id: Uuid) {
         persistenceMutex.withLock {
             // 排队的旧写入应保存当前状态，不能把已取消的工作写回。
             val work = store.value[id] ?: return@withLock
