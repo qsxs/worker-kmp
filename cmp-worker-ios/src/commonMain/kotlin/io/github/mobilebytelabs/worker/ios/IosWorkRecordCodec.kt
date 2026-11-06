@@ -79,6 +79,7 @@ internal object IosWorkRecordCodec {
                 } ?: JsonNull,
             )
             put("request", record.request?.let(::encodeRequest) ?: JsonNull)
+            record.nextRunAtEpochMillis?.let { put("nextRunAtEpochMillis", it) }
         }
         return "${info.id}|$VERSION|$body"
     }
@@ -129,8 +130,10 @@ internal object IosWorkRecordCodec {
             UniqueWork(it.value("name"), WorkKind.valueOf(it.value("kind")))
         }
         val request = body.optional("request")?.jsonObject?.let { decodeRequest(id, it) }
+        // v2 的早期记录没有截止时间，仍可恢复原请求及状态。
+        val dueAt = body["nextRunAtEpochMillis"]?.takeUnless { it == JsonNull }?.jsonPrimitive?.content?.toLong()
         requireMatchingKind(request, unique)
-        return StoredWork(info, unique, request)
+        return StoredWork(info, unique, request, nextRunAtEpochMillis = dueAt)
     }
 
     private fun requireMatchingKind(request: WorkRequest?, unique: UniqueWork?) {

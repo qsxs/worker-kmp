@@ -43,14 +43,29 @@ internal class IosWorkStateStore(
         tags: Set<String>,
         uniqueWork: UniqueWork? = null,
         request: WorkRequest? = null,
+        nextRunAtEpochMillis: Long? = null,
     ): StoredWork {
-        val queued = StoredWork(WorkInfo(id = id, state = WorkInfo.State.ENQUEUED, tags = tags), uniqueWork, request)
+        val initialDue = nextRunAtEpochMillis.takeIf { request != null }
+        val queued = StoredWork(
+            WorkInfo(id = id, state = WorkInfo.State.ENQUEUED, tags = tags),
+            uniqueWork,
+            request,
+            initialDue,
+        )
         while (true) {
             val snapshot = store.value
             val existing = snapshot[id]
-            // 只有显式重交的请求才能补全旧版仅含状态的记录。
-            if (existing != null && (existing.request != null || request == null)) return existing
-            val record = existing?.copy(request = request) ?: queued
+            val record = if (existing == null) {
+                queued
+            } else {
+                // 只用显式提交的请求补全旧记录，保留已经持久化的截止时间。
+                val attached = existing.request ?: request
+                val dueAt =
+                    existing.nextRunAtEpochMillis
+                        ?: initialDue.takeIf { existing.info.state == WorkInfo.State.ENQUEUED }
+                if (existing.request === attached && existing.nextRunAtEpochMillis == dueAt) return existing
+                existing.copy(request = attached, nextRunAtEpochMillis = dueAt)
+            }
             if (store.compareAndSet(snapshot, snapshot + (id to record))) {
                 persist(id)
                 return record
@@ -65,10 +80,16 @@ internal class IosWorkStateStore(
         tags: Set<String>,
         livePeriodicIds: Set<Uuid> = emptySet(),
         request: WorkRequest? = null,
+        nextRunAtEpochMillis: Long? = null,
     ): UniqueEnqueue {
         policy.checkIosOneTimePolicy()
         val uniqueWork = UniqueWork(name, WorkKind.ONE_TIME)
-        val queued = StoredWork(WorkInfo(id = id, state = WorkInfo.State.ENQUEUED, tags = tags), uniqueWork, request)
+        val queued = StoredWork(
+            WorkInfo(id = id, state = WorkInfo.State.ENQUEUED, tags = tags),
+            uniqueWork,
+            request,
+            nextRunAtEpochMillis.takeIf { request != null },
+        )
         while (true) {
             val snapshot = store.value
             val existing = snapshot[id]
@@ -90,7 +111,7 @@ internal class IosWorkStateStore(
 
             request?.let(persistence::validateRequest)
             val replaced = active.associate { work ->
-                work.info.id to work.copy(info = work.info.asCancelled())
+                work.info.id to work.asCancelled()
             }
             if (store.compareAndSet(snapshot, snapshot + replaced + (id to queued))) {
                 replaced.keys.forEach(::persist)
@@ -100,25 +121,29 @@ internal class IosWorkStateStore(
         }
     }
 
-    fun transitionToRunning(id: Uuid, periodic: Boolean): Boolean = updateWork(id) { info ->
-        when (info.state) {
-            WorkInfo.State.ENQUEUED -> info.copy(state = WorkInfo.State.RUNNING)
-
-            WorkInfo.State.SUCCEEDED, WorkInfo.State.FAILED ->
-                if (periodic) info.copy(state = WorkInfo.State.RUNNING) else null
-
-            else -> null
+    fun transitionToRunning(id: Uuid, periodic: Boolean): Boolean = updateRecord(id) { work ->
+        val state = work.info.state
+        if (state == WorkInfo.State.ENQUEUED ||
+            (periodic && (state == WorkInfo.State.SUCCEEDED || state == WorkInfo.State.FAILED))
+        ) {
+            work.copy(info = work.info.copy(state = WorkInfo.State.RUNNING), nextRunAtEpochMillis = null)
+        } else {
+            null
         }
     }
 
-    fun finishWork(id: Uuid, succeeded: Boolean, outputData: WorkData): Boolean = updateRunningWork(id) { info ->
-        val state = if (succeeded) WorkInfo.State.SUCCEEDED else WorkInfo.State.FAILED
-        info.copy(state = state, outputData = outputData)
-    }
+    fun finishWork(id: Uuid, succeeded: Boolean, outputData: WorkData, nextRunAtEpochMillis: Long? = null): Boolean =
+        updateRunningRecord(id) { work ->
+            val state = if (succeeded) WorkInfo.State.SUCCEEDED else WorkInfo.State.FAILED
+            work.copy(
+                info = work.info.copy(state = state, outputData = outputData),
+                nextRunAtEpochMillis = nextRunAtEpochMillis,
+            )
+        }
 
-    fun cancelWork(id: Uuid, periodic: Boolean = false): Boolean = updateWork(id) { info ->
-        info.takeIf { it.state != WorkInfo.State.CANCELLED && (!it.isFinished || periodic) }
-            ?.asCancelled()
+    fun cancelWork(id: Uuid, periodic: Boolean = false): Boolean = updateRecord(id) { work ->
+        val info = work.info
+        work.takeIf { info.state != WorkInfo.State.CANCELLED && (!info.isFinished || periodic) }?.asCancelled()
     }
 
     fun refreshEnqueuedWork(id: Uuid) {
@@ -134,8 +159,21 @@ internal class IosWorkStateStore(
         }
     }
 
-    fun incrementAttempt(id: Uuid): Boolean = updateRunningWork(id) {
-        it.copy(runAttemptCount = it.runAttemptCount + 1)
+    fun incrementAttempt(id: Uuid): Boolean = updateRunningRecord(id) { work ->
+        work.copy(
+            info = work.info.copy(runAttemptCount = work.info.runAttemptCount + 1),
+            nextRunAtEpochMillis = null,
+        )
+    }
+
+    suspend fun scheduleRetry(id: Uuid, nextRunAtEpochMillis: Long): Boolean {
+        val updated = updateRunningRecord(id, persistAsync = false) {
+            it.copy(nextRunAtEpochMillis = nextRunAtEpochMillis)
+        }
+        if (!updated) return false
+        // 等待重试前写入截止时间，进程重启才能知道还有多少退避时间。
+        persistCurrent(id)
+        return true
     }
 
     suspend fun getById(id: Uuid): WorkInfo? = store.value[id]?.info
@@ -151,28 +189,41 @@ internal class IosWorkStateStore(
     private fun updateRunningWork(id: Uuid, transform: (WorkInfo) -> WorkInfo): Boolean =
         updateWork(id) { info -> info.takeIf { it.state == WorkInfo.State.RUNNING }?.let(transform) }
 
-    private fun updateWork(id: Uuid, transform: (WorkInfo) -> WorkInfo?): Boolean {
+    private fun updateWork(id: Uuid, transform: (WorkInfo) -> WorkInfo?): Boolean =
+        updateRecord(id) { work -> transform(work.info)?.let { work.copy(info = it) } }
+
+    private fun updateRunningRecord(
+        id: Uuid,
+        persistAsync: Boolean = true,
+        transform: (StoredWork) -> StoredWork,
+    ): Boolean = updateRecord(id, persistAsync) { work ->
+        work.takeIf { it.info.state == WorkInfo.State.RUNNING }?.let(transform)
+    }
+
+    private fun updateRecord(id: Uuid, persistAsync: Boolean = true, transform: (StoredWork) -> StoredWork?): Boolean {
         while (true) {
             val snapshot = store.value
             val work = snapshot[id] ?: return false
-            val updated = transform(work.info) ?: return false
-            if (store.compareAndSet(snapshot, snapshot + (id to work.copy(info = updated)))) {
-                persist(id)
+            val updated = transform(work) ?: return false
+            if (store.compareAndSet(snapshot, snapshot + (id to updated))) {
+                if (persistAsync) persist(id)
                 return true
             }
         }
     }
 
     private fun persist(id: Uuid) {
-        scope?.launch {
-            persistenceMutex.withLock {
-                // 排队的旧写入应保存当前状态，不能把已取消的工作写回。
-                val work = store.value[id] ?: return@withLock
-                if (work.info.isFinished && !work.hasRecurringRequest()) {
-                    persistence.delete(id)
-                } else {
-                    persistence.saveRecord(work)
-                }
+        scope?.launch { persistCurrent(id) }
+    }
+
+    private suspend fun persistCurrent(id: Uuid) {
+        persistenceMutex.withLock {
+            // 排队的旧写入应保存当前状态，不能把已取消的工作写回。
+            val work = store.value[id] ?: return@withLock
+            if (work.info.isFinished && !work.hasRecurringRequest()) {
+                persistence.delete(id)
+            } else {
+                persistence.saveRecord(work)
             }
         }
     }
@@ -183,9 +234,17 @@ internal class IosWorkStateStore(
     private fun StoredWork.hasRecurringRequest(): Boolean =
         request is PeriodicWorkRequest && info.state != WorkInfo.State.CANCELLED
 
-    private fun WorkInfo.asCancelled(): WorkInfo = copy(state = WorkInfo.State.CANCELLED, outputData = WorkData.EMPTY)
+    private fun StoredWork.asCancelled(): StoredWork = copy(
+        info = info.copy(state = WorkInfo.State.CANCELLED, outputData = WorkData.EMPTY),
+        nextRunAtEpochMillis = null,
+    )
 
-    data class StoredWork(val info: WorkInfo, val uniqueWork: UniqueWork? = null, val request: WorkRequest? = null) {
+    data class StoredWork(
+        val info: WorkInfo,
+        val uniqueWork: UniqueWork? = null,
+        val request: WorkRequest? = null,
+        val nextRunAtEpochMillis: Long? = null,
+    ) {
         fun requireMatchingRequest(incoming: WorkRequest) {
             val saved = request ?: return
             if (!IosWorkRecordCodec.matchesRequest(saved, incoming)) {

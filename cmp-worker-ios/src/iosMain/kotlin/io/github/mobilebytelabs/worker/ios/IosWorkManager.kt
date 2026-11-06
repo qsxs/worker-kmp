@@ -1,7 +1,6 @@
 package io.github.mobilebytelabs.worker.ios
 
 import co.touchlab.kermit.Logger
-import io.github.mobilebytelabs.worker.BackoffPolicy
 import io.github.mobilebytelabs.worker.Constraints
 import io.github.mobilebytelabs.worker.ExistingPeriodicWorkPolicy
 import io.github.mobilebytelabs.worker.ExistingWorkPolicy
@@ -9,7 +8,6 @@ import io.github.mobilebytelabs.worker.ExperimentalWorkerApi
 import io.github.mobilebytelabs.worker.NetworkType
 import io.github.mobilebytelabs.worker.OneTimeWorkRequest
 import io.github.mobilebytelabs.worker.PeriodicWorkRequest
-import io.github.mobilebytelabs.worker.RetryConfig
 import io.github.mobilebytelabs.worker.WorkData
 import io.github.mobilebytelabs.worker.WorkEnqueueException
 import io.github.mobilebytelabs.worker.WorkInfo
@@ -36,9 +34,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import kotlin.math.pow
-import kotlin.time.Duration
-import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Clock
 import kotlin.uuid.Uuid
 
 @OptIn(ExperimentalWorkerApi::class)
@@ -93,6 +89,7 @@ class IosWorkManager internal constructor(
                 request.tags,
                 livePeriodicIds,
                 request,
+                nextRunAtEpochMillis = iosInitialDueAtEpochMillis(nowEpochMillis(), request),
             )
             val oldJobs = result.replacedIds.mapNotNull { jobRegistry.remove(it)?.job }
             val newJob = if (result.enqueued) registerJob(request) { executeOneTime(request) } else null
@@ -113,11 +110,9 @@ class IosWorkManager internal constructor(
             UniqueWork(uniqueWorkName, WorkKind.PERIODIC),
             replace = existingPeriodicWorkPolicy == ExistingPeriodicWorkPolicy.REPLACE,
         ) {
-            val delayMs = request.initialDelay.inWholeMilliseconds
-            if (delayMs > 0) delay(delayMs)
             while (isActive) {
+                awaitDue(stateStore.snapshot()[request.id]?.nextRunAtEpochMillis)
                 if (!executeWorker(request)) break
-                delay(request.repeatInterval.inWholeMilliseconds)
             }
         } ?: return request.id
         // quickRefresh: schedule BGAppRefreshTaskRequest instead of BGProcessingTaskRequest.
@@ -127,7 +122,10 @@ class IosWorkManager internal constructor(
         ) {
             scheduleBgAppRefreshTask(
                 identifier = config.appRefreshTaskIdentifier,
-                earliestBeginInSeconds = request.initialDelay.inWholeMilliseconds / 1000.0,
+                earliestBeginInSeconds = iosRemainingDelayMillis(
+                    nowEpochMillis(),
+                    stateStore.snapshot()[request.id]?.nextRunAtEpochMillis,
+                ) / 1000.0,
             )
         }
         job.start()
@@ -168,7 +166,13 @@ class IosWorkManager internal constructor(
             }
             // 维持周期任务按旧名称标签查询和取消的行为；唯一调度按显式身份匹配。
             val tags = if (uniqueWork == null) request.tags else request.tags + uniqueWork.name
-            stateStore.initWork(request.id, tags, uniqueWork, request)
+            stateStore.initWork(
+                request.id,
+                tags,
+                uniqueWork,
+                request,
+                nextRunAtEpochMillis = iosInitialDueAtEpochMillis(nowEpochMillis(), request),
+            )
             registerJob(request, execute) to previousJobs
         } ?: return null
         replacedJobs.forEach { it.cancel() }
@@ -254,10 +258,14 @@ class IosWorkManager internal constructor(
     }
 
     private suspend fun executeOneTime(request: OneTimeWorkRequest) {
-        val delayMs = request.initialDelay.inWholeMilliseconds
-        if (delayMs > 0) delay(delayMs)
+        awaitDue(stateStore.snapshot()[request.id]?.nextRunAtEpochMillis)
         awaitConstraintsSatisfied(request.constraints)
         executeWorker(request)
+    }
+
+    private suspend fun awaitDue(dueAt: Long?) {
+        val remaining = iosRemainingDelayMillis(nowEpochMillis(), dueAt)
+        if (remaining > 0L) delay(remaining)
     }
 
     // Waits until all constraints in [constraints] are satisfied.
@@ -323,7 +331,9 @@ class IosWorkManager internal constructor(
                 }
 
                 if (result is WorkResult.Retry && attempt < request.retryConfig.maxAttempts - 1) {
-                    delay(iosBackoffDelay(request.retryConfig, attempt).inWholeMilliseconds)
+                    val retryAt = iosDueAtEpochMillis(nowEpochMillis(), iosBackoffDelay(request.retryConfig, attempt))
+                    if (!stateStore.scheduleRetry(request.id, retryAt)) return false
+                    awaitDue(retryAt)
                     attempt++
                 } else {
                     break
@@ -337,10 +347,14 @@ class IosWorkManager internal constructor(
                     result = WorkResult.Failure(failure.message ?: "Invalid iOS work output")
                 }
             }
+            val nextRunAt = (request as? PeriodicWorkRequest)?.let {
+                iosDueAtEpochMillis(nowEpochMillis(), it.repeatInterval)
+            }
             return stateStore.finishWork(
                 request.id,
                 succeeded = result is WorkResult.Success,
                 outputData = (result as? WorkResult.Success)?.outputData ?: WorkData.EMPTY,
+                nextRunAtEpochMillis = nextRunAt,
             )
         } catch (e: CancellationException) {
             stateStore.cancelWork(request.id)
@@ -372,13 +386,4 @@ class IosWorkManager internal constructor(
     private data class RegisteredWork(val job: Job, val periodic: Boolean)
 }
 
-internal fun iosBackoffDelay(config: RetryConfig, attempt: Int): Duration {
-    val delayMs = when (config.backoffPolicy) {
-        BackoffPolicy.EXPONENTIAL ->
-            (config.initialDelay.inWholeMilliseconds * config.multiplier.pow(attempt)).toLong()
-
-        BackoffPolicy.LINEAR ->
-            config.initialDelay.inWholeMilliseconds * (attempt + 1)
-    }.coerceAtMost(config.maxDelay.inWholeMilliseconds)
-    return delayMs.milliseconds
-}
+private fun nowEpochMillis(): Long = Clock.System.now().toEpochMilliseconds()

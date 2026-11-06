@@ -27,11 +27,14 @@ import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFails
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration
 import kotlin.time.Duration.Companion.hours
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.nanoseconds
 import kotlin.time.Duration.Companion.seconds
@@ -117,11 +120,14 @@ class IosWorkRecordCodecTest {
         val unique = UniqueWork("nightly", WorkKind.PERIODIC)
         val info = WorkInfo(id = request.id, state = WorkInfo.State.SUCCEEDED)
 
-        val decoded =
-            assertNotNull(IosWorkRecordCodec.decode(IosWorkRecordCodec.encode(StoredWork(info, unique, request))))
+        val encoded = IosWorkRecordCodec.encode(
+            StoredWork(info, unique, request, nextRunAtEpochMillis = Long.MAX_VALUE),
+        )
+        val decoded = assertNotNull(IosWorkRecordCodec.decode(encoded))
 
         assertEquals(info, decoded.info)
         assertEquals(unique, decoded.uniqueWork)
+        assertEquals(Long.MAX_VALUE, decoded.nextRunAtEpochMillis)
         val restored = assertIs<PeriodicWorkRequest>(decoded.request)
         assertEquals(request.id, restored.id)
         assertEquals(request.workerClass, restored.workerClass)
@@ -145,6 +151,7 @@ class IosWorkRecordCodecTest {
         assertEquals(setOf("backup", "nightly"), restored.info.tags)
         assertNull(restored.request)
         assertNull(restored.uniqueWork)
+        assertNull(restored.nextRunAtEpochMillis)
         assertNull(IosWorkRecordCodec.decode("$id|3|{}"))
         assertNull(IosWorkRecordCodec.decode("$id|2|{}"))
     }
@@ -204,9 +211,11 @@ class IosWorkRecordCodecTest {
         val request = periodicRequest()
         val unique = UniqueWork("nightly", WorkKind.PERIODIC)
         val original = IosWorkStateStore(persistence, backgroundScope)
-        original.initWork(request.id, request.tags, unique, request)
+        original.initWork(request.id, request.tags, unique, request, nextRunAtEpochMillis = 100L)
         assertTrue(original.transitionToRunning(request.id, periodic = true))
-        assertTrue(original.finishWork(request.id, succeeded = true, WorkData("written" to 1)))
+        assertNull(original.snapshot()[request.id]?.nextRunAtEpochMillis)
+        val nextDue = iosDueAtEpochMillis(1_000L, request.repeatInterval)
+        assertTrue(original.finishWork(request.id, succeeded = true, WorkData("written" to 1), nextDue))
         runCurrent()
 
         val saved = persistence.loadRecords().single()
@@ -217,10 +226,142 @@ class IosWorkRecordCodecTest {
 
         val restored = assertNotNull(reopened.snapshot()[request.id])
         assertEquals(WorkInfo.State.SUCCEEDED, restored.info.state)
+        assertEquals(nextDue, restored.nextRunAtEpochMillis)
         assertEquals(1, restored.info.outputData.getInt("written"))
         assertEquals(unique, restored.uniqueWork)
         assertEquals(request.repeatInterval, assertIs<PeriodicWorkRequest>(restored.request).repeatInterval)
+        assertTrue(reopened.transitionToRunning(request.id, periodic = true))
+        assertNull(reopened.snapshot()[request.id]?.nextRunAtEpochMillis)
+        val afterFailure = iosDueAtEpochMillis(nextDue + 500L, request.repeatInterval)
+        assertTrue(reopened.finishWork(request.id, succeeded = false, WorkData.EMPTY, afterFailure))
+        runCurrent()
+        val failed = reopenedPersistence.loadRecords().single()
+        assertEquals(WorkInfo.State.FAILED, failed.info.state)
+        assertEquals(afterFailure, failed.nextRunAtEpochMillis)
         assertTrue(reopened.cancelWork(request.id, periodic = true))
+        assertNull(reopened.snapshot()[request.id]?.nextRunAtEpochMillis)
+        runCurrent()
+        assertTrue(reopenedPersistence.loadRecords().isEmpty())
+    }
+
+    @Test
+    fun dueTimeArithmeticSaturatesAndRetainsRetryPolicy() {
+        val request = OneTimeWorkRequestBuilder<CoroutineWorker>("BackupWorker").apply {
+            setInitialDelay(3.seconds)
+        }.build()
+        assertEquals(4_000L, iosInitialDueAtEpochMillis(1_000L, request))
+        assertEquals(10L, iosDueAtEpochMillis(10L, (-5).milliseconds))
+        assertEquals(Long.MAX_VALUE, iosDueAtEpochMillis(Long.MAX_VALUE - 5L, 10.milliseconds))
+        assertEquals(Long.MAX_VALUE, iosRemainingDelayMillis(Long.MIN_VALUE, Long.MAX_VALUE))
+        assertEquals(200L, iosRemainingDelayMillis(300L, 500L))
+        assertEquals(0L, iosRemainingDelayMillis(500L, 499L))
+        assertEquals(0L, iosRemainingDelayMillis(500L, null))
+
+        val retry = RetryConfig(initialDelay = 2.seconds, maxDelay = 5.seconds, multiplier = 2.0)
+        assertEquals(4.seconds, iosBackoffDelay(retry, 1))
+        assertEquals(5.seconds, iosBackoffDelay(retry, 2))
+        val linear = retry.copy(backoffPolicy = BackoffPolicy.LINEAR)
+        assertEquals(4.seconds, iosBackoffDelay(linear, 1))
+        assertEquals(5.seconds, iosBackoffDelay(linear, 2))
+        assertEquals(Duration.ZERO, iosBackoffDelay(linear.copy(maxDelay = (-1).seconds), 2))
+        assertEquals(
+            Duration.INFINITE,
+            iosBackoffDelay(linear.copy(initialDelay = Duration.INFINITE, maxDelay = Duration.INFINITE), Int.MAX_VALUE),
+        )
+    }
+
+    @Test
+    fun duplicateUniqueEnqueueKeepsItsOriginallyPersistedDueTime() = runTest {
+        val persistence = InMemoryIosWorkPersistence()
+        val original = IosWorkStateStore(persistence, backgroundScope)
+        val request = OneTimeWorkRequestBuilder<CoroutineWorker>("BackupWorker").apply {
+            setInitialDelay(2.seconds)
+        }.build()
+        val dueAt = iosInitialDueAtEpochMillis(1_000L, request)
+        assertTrue(
+            original.enqueueUniqueOneTime(
+                "backup",
+                ExistingWorkPolicy.KEEP,
+                request.id,
+                request.tags,
+                request = request,
+                nextRunAtEpochMillis = dueAt,
+            ).enqueued,
+        )
+        runCurrent()
+        val reopened = IosWorkStateStore(persistence)
+        reopened.restoreFromPersistence()
+        assertFalse(
+            reopened.enqueueUniqueOneTime(
+                "backup",
+                ExistingWorkPolicy.KEEP,
+                request.id,
+                request.tags,
+                request = request,
+                nextRunAtEpochMillis = 8_000L,
+            ).enqueued,
+        )
+
+        assertEquals(dueAt, reopened.snapshot()[request.id]?.nextRunAtEpochMillis)
+        assertEquals(dueAt, persistence.loadRecords().single().nextRunAtEpochMillis)
+    }
+
+    @Test
+    fun explicitReattachmentCanFillMissingV2DueWithoutInventingALegacyRequest() = runTest {
+        val request = OneTimeWorkRequestBuilder<CoroutineWorker>("BackupWorker").build()
+        val encoded = IosWorkRecordCodec.encode(
+            StoredWork(WorkInfo(request.id, WorkInfo.State.ENQUEUED), request = request),
+        )
+        val legacyId = Uuid.random()
+        val persistence = InMemoryIosWorkPersistence().apply {
+            saveRecord(assertNotNull(IosWorkRecordCodec.decode(encoded)))
+            saveRecord(assertNotNull(IosWorkRecordCodec.decode("$legacyId|ENQUEUED|0|")))
+        }
+        val reopened = IosWorkStateStore(persistence, backgroundScope)
+        reopened.restoreFromPersistence()
+        assertNull(reopened.snapshot()[request.id]?.nextRunAtEpochMillis)
+
+        reopened.initWork(request.id, request.tags, request = request, nextRunAtEpochMillis = 700L)
+        reopened.initWork(legacyId, emptySet(), nextRunAtEpochMillis = 700L)
+        runCurrent()
+
+        assertEquals(700L, persistence.loadRecords().single { it.info.id == request.id }.nextRunAtEpochMillis)
+        val legacy = persistence.loadRecords().single { it.info.id == legacyId }
+        assertNull(legacy.request)
+        assertNull(legacy.nextRunAtEpochMillis)
+    }
+
+    @Test
+    fun retryDueIsPersistedBeforeReturningAndClearedOnNextAttempt() = runTest {
+        val persistence = InMemoryIosWorkPersistence()
+        val request = OneTimeWorkRequestBuilder<CoroutineWorker>("BackupWorker").build()
+        val original = IosWorkStateStore(persistence)
+        original.initWork(request.id, request.tags, request = request, nextRunAtEpochMillis = 100L)
+        assertTrue(original.transitionToRunning(request.id, periodic = false))
+        assertTrue(original.incrementAttempt(request.id))
+        assertTrue(persistence.loadRecords().isEmpty())
+        assertTrue(original.scheduleRetry(request.id, nextRunAtEpochMillis = 900L))
+
+        val saved = persistence.loadRecords().single()
+        assertEquals(900L, saved.nextRunAtEpochMillis)
+        assertEquals(1, saved.info.runAttemptCount)
+        assertTrue(original.incrementAttempt(request.id))
+        assertNull(original.snapshot()[request.id]?.nextRunAtEpochMillis)
+        val reopenedPersistence = InMemoryIosWorkPersistence().apply {
+            saveRecord(assertNotNull(IosWorkRecordCodec.decode(IosWorkRecordCodec.encode(saved))))
+        }
+        val reopened = IosWorkStateStore(reopenedPersistence, backgroundScope)
+        reopened.restoreFromPersistence()
+        assertEquals(WorkInfo.State.ENQUEUED, reopened.snapshot()[request.id]?.info?.state)
+        assertEquals(900L, reopened.snapshot()[request.id]?.nextRunAtEpochMillis)
+        assertTrue(reopened.transitionToRunning(request.id, periodic = false))
+        assertTrue(reopened.incrementAttempt(request.id))
+        runCurrent()
+        val retried = reopenedPersistence.loadRecords().single()
+        assertEquals(2, retried.info.runAttemptCount)
+        assertNull(retried.nextRunAtEpochMillis)
+        assertTrue(reopened.cancelWork(request.id))
+        assertFalse(reopened.scheduleRetry(request.id, nextRunAtEpochMillis = 1_000L))
         runCurrent()
         assertTrue(reopenedPersistence.loadRecords().isEmpty())
     }
