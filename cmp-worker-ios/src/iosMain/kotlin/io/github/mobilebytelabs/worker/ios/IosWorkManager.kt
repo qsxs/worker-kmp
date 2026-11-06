@@ -92,6 +92,7 @@ class IosWorkManager internal constructor(
                 request.id,
                 request.tags,
                 livePeriodicIds,
+                request,
             )
             val oldJobs = result.replacedIds.mapNotNull { jobRegistry.remove(it)?.job }
             val newJob = if (result.enqueued) registerJob(request) { executeOneTime(request) } else null
@@ -148,6 +149,7 @@ class IosWorkManager internal constructor(
             }
             if (request.id in jobRegistry) return@withLock null
             if (existing != null && existing.info.state != WorkInfo.State.ENQUEUED) return@withLock null
+            existing?.requireMatchingRequest(request)
             if (uniqueWork != null) {
                 val oneTime = uniqueWork.copy(kind = WorkKind.ONE_TIME)
                 if (snapshot.values.any { it.uniqueWork == oneTime && !it.info.isFinished }) {
@@ -156,6 +158,7 @@ class IosWorkManager internal constructor(
                     )
                 }
             }
+            persistence.validateRequest(request)
             val previousJobs = if (uniqueWork == null || !replace) {
                 emptyList()
             } else {
@@ -165,7 +168,7 @@ class IosWorkManager internal constructor(
             }
             // 维持周期任务按旧名称标签查询和取消的行为；唯一调度按显式身份匹配。
             val tags = if (uniqueWork == null) request.tags else request.tags + uniqueWork.name
-            stateStore.initWork(request.id, tags, uniqueWork)
+            stateStore.initWork(request.id, tags, uniqueWork, request)
             registerJob(request, execute) to previousJobs
         } ?: return null
         replacedJobs.forEach { it.cancel() }
@@ -198,7 +201,8 @@ class IosWorkManager internal constructor(
     private fun markCancelled(id: Uuid): Job? {
         val work = jobRegistry[id]
         // 周期任务在两轮之间也可能显示为 SUCCEEDED 或 FAILED。
-        val periodic = work != null && work.periodic && !work.job.isCompleted
+        val periodic = (work != null && work.periodic && !work.job.isCompleted) ||
+            stateStore.snapshot()[id]?.request is PeriodicWorkRequest
         return if (stateStore.cancelWork(id, periodic)) jobRegistry.remove(id)?.job else null
     }
 
@@ -326,6 +330,13 @@ class IosWorkManager internal constructor(
                 }
             } while (true)
 
+            if (request is PeriodicWorkRequest && result is WorkResult.Success) {
+                try {
+                    persistence.validateData(result.outputData)
+                } catch (failure: IllegalArgumentException) {
+                    result = WorkResult.Failure(failure.message ?: "Invalid iOS work output")
+                }
+            }
             return stateStore.finishWork(
                 request.id,
                 succeeded = result is WorkResult.Success,

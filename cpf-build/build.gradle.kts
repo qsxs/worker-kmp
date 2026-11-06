@@ -85,6 +85,7 @@ kotlin {
         jvmTest {
             kotlin.setSrcDirs(listOf(upstreamSources.dir("jvmTest/kotlin")))
             resources.setSrcDirs(listOf(upstreamSources.dir("jvmTest/resources")))
+            dependencies { implementation(libs.kotlinx.serialization.json) }
         }
     }
 }
@@ -96,9 +97,11 @@ tasks.named<KotlinCompileTool>("compileTestKotlinJvm") {
     source(
         iosSources.file("commonMain/$iosSourcePackage/IosWorkStateStore.kt"),
         iosSources.file("commonMain/$iosSourcePackage/IosWorkPersistence.kt"),
+        iosSources.file("commonMain/$iosSourcePackage/IosWorkRecordCodec.kt"),
         iosSources.file("commonMain/$iosSourcePackage/BgTaskExecution.kt"),
         iosSources.file("commonTest/$iosSourcePackage/InMemoryIosWorkPersistence.kt"),
         iosSources.file("commonTest/$iosSourcePackage/IosWorkStateStoreTest.kt"),
+        iosSources.file("commonTest/$iosSourcePackage/IosWorkRecordCodecTest.kt"),
         iosSources.file("commonTest/$iosSourcePackage/BgTaskExecutionTest.kt"),
     )
 }

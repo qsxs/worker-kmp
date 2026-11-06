@@ -42,6 +42,7 @@ kotlin {
             dependencies {
                 api(project(":"))
                 implementation(libs.kotlinx.coroutines.core)
+                implementation(libs.kotlinx.serialization.json)
                 // 启动器的公开签名包含 Composable 与 Koin Module。
                 api(compose.runtime)
                 api(compose.ui)

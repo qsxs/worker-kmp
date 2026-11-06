@@ -1,10 +1,12 @@
 package io.github.mobilebytelabs.worker.ios
 
 import io.github.mobilebytelabs.worker.ExistingWorkPolicy
+import io.github.mobilebytelabs.worker.PeriodicWorkRequest
 import io.github.mobilebytelabs.worker.WorkData
 import io.github.mobilebytelabs.worker.WorkEnqueueException
 import io.github.mobilebytelabs.worker.WorkInfo
 import io.github.mobilebytelabs.worker.WorkProgress
+import io.github.mobilebytelabs.worker.WorkRequest
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -25,24 +27,33 @@ internal class IosWorkStateStore(
     // Only populates when the store is still empty — prevents clobbering in-flight mutations.
     suspend fun restoreFromPersistence() {
         persistenceMutex.withLock {
-            val saved = persistence.loadAll()
+            val saved = persistence.loadRecords()
             if (saved.isEmpty()) return@withLock
-            val restored = saved.associate { info ->
+            val restored = saved.associate { work ->
+                val info = work.info
                 val state = if (info.state == WorkInfo.State.RUNNING) WorkInfo.State.ENQUEUED else info.state
-                info.id to StoredWork(info.copy(state = state))
+                info.id to work.copy(info = info.copy(state = state))
             }
             store.compareAndSet(emptyMap(), restored)
         }
     }
 
-    fun initWork(id: Uuid, tags: Set<String>, uniqueWork: UniqueWork? = null): StoredWork {
-        val queued = StoredWork(WorkInfo(id = id, state = WorkInfo.State.ENQUEUED, tags = tags), uniqueWork)
+    fun initWork(
+        id: Uuid,
+        tags: Set<String>,
+        uniqueWork: UniqueWork? = null,
+        request: WorkRequest? = null,
+    ): StoredWork {
+        val queued = StoredWork(WorkInfo(id = id, state = WorkInfo.State.ENQUEUED, tags = tags), uniqueWork, request)
         while (true) {
             val snapshot = store.value
-            snapshot[id]?.let { return it }
-            if (store.compareAndSet(snapshot, snapshot + (id to queued))) {
+            val existing = snapshot[id]
+            // 只有显式重交的请求才能补全旧版仅含状态的记录。
+            if (existing != null && (existing.request != null || request == null)) return existing
+            val record = existing?.copy(request = request) ?: queued
+            if (store.compareAndSet(snapshot, snapshot + (id to record))) {
                 persist(id)
-                return queued
+                return record
             }
         }
     }
@@ -53,10 +64,11 @@ internal class IosWorkStateStore(
         id: Uuid,
         tags: Set<String>,
         livePeriodicIds: Set<Uuid> = emptySet(),
+        request: WorkRequest? = null,
     ): UniqueEnqueue {
         policy.checkIosOneTimePolicy()
         val uniqueWork = UniqueWork(name, WorkKind.ONE_TIME)
-        val queued = StoredWork(WorkInfo(id = id, state = WorkInfo.State.ENQUEUED, tags = tags), uniqueWork)
+        val queued = StoredWork(WorkInfo(id = id, state = WorkInfo.State.ENQUEUED, tags = tags), uniqueWork, request)
         while (true) {
             val snapshot = store.value
             val existing = snapshot[id]
@@ -76,6 +88,7 @@ internal class IosWorkStateStore(
                 return UniqueEnqueue(active.first().info.id, enqueued = false)
             }
 
+            request?.let(persistence::validateRequest)
             val replaced = active.associate { work ->
                 work.info.id to work.copy(info = work.info.asCancelled())
             }
@@ -115,7 +128,10 @@ internal class IosWorkStateStore(
     }
 
     fun updateProgress(id: Uuid, progress: WorkProgress) {
-        updateRunningWork(id) { it.copy(progress = progress) }
+        updateRunningWork(id) {
+            persistence.validateData(progress.data)
+            it.copy(progress = progress)
+        }
     }
 
     fun incrementAttempt(id: Uuid): Boolean = updateRunningWork(id) {
@@ -151,18 +167,32 @@ internal class IosWorkStateStore(
         scope?.launch {
             persistenceMutex.withLock {
                 // 排队的旧写入应保存当前状态，不能把已取消的工作写回。
-                val info = store.value[id]?.info ?: return@withLock
-                if (info.isFinished) persistence.delete(id) else persistence.save(info)
+                val work = store.value[id] ?: return@withLock
+                if (work.info.isFinished && !work.hasRecurringRequest()) {
+                    persistence.delete(id)
+                } else {
+                    persistence.saveRecord(work)
+                }
             }
         }
     }
 
-    private fun StoredWork.isActive(livePeriodicIds: Set<Uuid>): Boolean =
-        !info.isFinished || (info.state != WorkInfo.State.CANCELLED && info.id in livePeriodicIds)
+    private fun StoredWork.isActive(livePeriodicIds: Set<Uuid>): Boolean = !info.isFinished || hasRecurringRequest() ||
+        (info.state != WorkInfo.State.CANCELLED && info.id in livePeriodicIds)
+
+    private fun StoredWork.hasRecurringRequest(): Boolean =
+        request is PeriodicWorkRequest && info.state != WorkInfo.State.CANCELLED
 
     private fun WorkInfo.asCancelled(): WorkInfo = copy(state = WorkInfo.State.CANCELLED, outputData = WorkData.EMPTY)
 
-    data class StoredWork(val info: WorkInfo, val uniqueWork: UniqueWork? = null)
+    data class StoredWork(val info: WorkInfo, val uniqueWork: UniqueWork? = null, val request: WorkRequest? = null) {
+        fun requireMatchingRequest(incoming: WorkRequest) {
+            val saved = request ?: return
+            if (!IosWorkRecordCodec.matchesRequest(saved, incoming)) {
+                throw WorkEnqueueException("Work ID ${info.id} is already used by a different work request")
+            }
+        }
+    }
 
     data class UniqueWork(val name: String, val kind: WorkKind)
 

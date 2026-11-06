@@ -28,6 +28,7 @@ kotlin {
             dependencies {
                 api(project(":cmp-worker-kmp"))
                 implementation(libs.kotlinx.coroutines.core)
+                implementation(libs.kotlinx.serialization.json)
                 // worker-kmp-cmp-launchers-02: launcher API surface
                 implementation(compose.runtime)
                 implementation(compose.ui)
