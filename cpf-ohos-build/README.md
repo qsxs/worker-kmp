@@ -20,8 +20,10 @@ $NativeProperty = "-Pkotlin.native.home=$CpfNativeHome"
 & $Gradle811 -p "$ForkRoot\cpf-ohos-build" $NativeProperty publishAllPublicationsToCpfRepository --console=plain
 ```
 
-本地 Maven 仓库默认位于 `cpf-ohos-build/build/repository`。请通过 `publishAllPublicationsToCpfRepository` 一次发布 `com.lihb.forks.worker:worker-kmp:4.0.8-cpf.3-ohos.1` 和同版 `worker-kmp-ohosx64`、`worker-kmp-ohosarm64`。
+本地 Maven 仓库默认位于 `cpf-ohos-build/build/repository`。请通过 `publishAllPublicationsToCpfRepository` 一次发布当前候选 `com.lihb.forks.worker:worker-kmp:4.0.8-cpf.3-ohos.2` 和同版 `worker-kmp-ohosx64`、`worker-kmp-ohosarm64`。
 
 发布前会检查三个候选目录，并原子创建当前版本的仓库占位文件。占位文件在每次尝试后保留。失败时可通过 `-Pcpf.ohos.repository=<独立本地目录>` 在新的空仓库重试。独立消费工程应使用同一次完整发布生成的一个文件仓库，声明根坐标并通过 Gradle Module Metadata 选择对应 Native 叶子，再分别编译和链接。
 
-当前批次验证范围为 core 制品及外部链接。持久化和系统调度能力均报告为 `false`，前台提权请求会抛出 `ForegroundNotSupportedException`。宿主调度与设备运行留待后续批次。
+历史版本 `4.0.8-cpf.3-ohos.1` 已通过 core 元数据、双 ABI 构建、本地发布及独立消费者动态链接验证。项目的可选构建入口 `formalWorkManager=true` 继续锁定该版本。默认构建沿用原接线。
+
+当前本地候选 `4.0.8-cpf.3-ohos.2` 增加真实的进程内 `OhosWorkManager` 入口，支持普通一次性任务、同名 `KEEP` 以及按 ID、名称和标签取消与观察。持久化和系统调度能力均报告为 `false`，周期任务和平台约束留待后续批次，前台提权请求会抛出 `ForegroundNotSupportedException`。候选须单独完成本地发布与双 ABI 外部链接验证，设备运行留待宿主适配。

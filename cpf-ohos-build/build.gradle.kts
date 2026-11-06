@@ -11,7 +11,7 @@ plugins {
 
 val cpfKotlinVersion = "2.4.20-0.1.0-11"
 val publicationGroup = "com.lihb.forks.worker"
-val publicationVersion = "4.0.8-cpf.3-ohos.1"
+val publicationVersion = "4.0.8-cpf.3-ohos.2"
 val publicationArtifacts =
     mapOf(
         "kotlinMultiplatform" to "worker-kmp",
