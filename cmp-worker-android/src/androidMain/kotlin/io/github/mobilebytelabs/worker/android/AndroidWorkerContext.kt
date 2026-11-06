@@ -1,9 +1,9 @@
 package io.github.mobilebytelabs.worker.android
 
 import androidx.work.Data
+import androidx.work.ForegroundInfo
 import io.github.mobilebytelabs.worker.WorkData
 import io.github.mobilebytelabs.worker.WorkProgress
-import io.github.mobilebytelabs.worker.WorkerContext
 import kotlin.uuid.Uuid
 
 internal class AndroidWorkerContext(
@@ -11,7 +11,7 @@ internal class AndroidWorkerContext(
     override val id: Uuid,
     override val inputData: WorkData,
     override val tags: Set<String>,
-) : WorkerContext {
+) : AndroidForegroundWorkerContext {
     override val runAttemptCount: Int
         get() = androidWorker.runAttemptCount
 
@@ -22,5 +22,9 @@ internal class AndroidWorkerContext(
             .putInt(KEY_KMP_PROGRESS, progress.progress)
             .build()
         androidWorker.setProgress(data)
+    }
+
+    override suspend fun setForeground(info: ForegroundInfo) {
+        androidWorker.setForeground(info)
     }
 }

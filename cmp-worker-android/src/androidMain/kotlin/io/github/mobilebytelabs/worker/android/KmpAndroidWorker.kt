@@ -45,14 +45,18 @@ class KmpAndroidWorker internal constructor(
     }
 
     override suspend fun getForegroundInfo(): AndroidForegroundInfo {
-        val worker = delegate?.worker as? ForegroundWorker ?: throw ForegroundNotSupportedException(
+        val worker = delegate?.worker
+        if (worker is AndroidNativeForegroundProvider) {
+            return worker.getAndroidForegroundInfo()
+        }
+        val foregroundWorker = worker as? ForegroundWorker ?: throw ForegroundNotSupportedException(
             platform = "Android",
             reason = "An initialized ForegroundWorker is required to provide an initial foreground notification.",
         )
         return AndroidForegroundBridge.toAndroidForegroundInfo(
             applicationContext,
-            worker.id,
-            worker.getForegroundInfo(),
+            foregroundWorker.id,
+            foregroundWorker.getForegroundInfo(),
         )
     }
 

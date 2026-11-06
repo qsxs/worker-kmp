@@ -27,7 +27,7 @@
 
 各源集同级的 `resources` 目录也已挂接；目录不存在时没有对应资源输入。
 测试源集仅用于主控明确授权的定向测试，不代表已运行测试。
-Android producer 包含该目录全部 10 个 Kotlin 文件，保留 `WorkerKmpComposeActivity`、
+Android producer 包含该目录全部 Kotlin 文件，保留 `WorkerKmpComposeActivity`、
 `WorkerKmpStarterApplication` 与 `AndroidForegroundBridge.notificationCustomizer`。
 原空 `cmp-worker-android/src/androidMain/AndroidManifest.xml` 经 AGP 公共 Variant API
 直接加入 Manifest 输入，不删减 API、不复制源码。上游 Android host 测试接线见下文 C0，
@@ -87,10 +87,10 @@ Android KMP library、Compose Multiplatform、Compose compiler 插件，不使�
 
 坐标由本目录 `gradle.properties` 的 `cpf.group`、`cpf.version` 提供，默认值为：
 
-- core KMP 根坐标：`com.lihb.forks.worker:worker-kmp:4.0.8-cpf.3-android.8`。
-- core JVM 坐标：`com.lihb.forks.worker:worker-kmp-jvm:4.0.8-cpf.3-android.8`。
-- Android KMP 根坐标：`com.lihb.forks.worker:worker-android:4.0.8-cpf.3-android.8`。
-- Android 目标叶坐标：`com.lihb.forks.worker:worker-android-android:4.0.8-cpf.3-android.8`。
+- core KMP 根坐标：`com.lihb.forks.worker:worker-kmp:4.0.8-cpf.3-android.9`。
+- core JVM 坐标：`com.lihb.forks.worker:worker-kmp-jvm:4.0.8-cpf.3-android.9`。
+- Android KMP 根坐标：`com.lihb.forks.worker:worker-android:4.0.8-cpf.3-android.9`。
+- Android 目标叶坐标：`com.lihb.forks.worker:worker-android-android:4.0.8-cpf.3-android.9`。
 - 文件仓库：`cpf-build/build/repository`，发布仓库名称为 `Cpf`。
 
 Android 坐标按 KMP 的 `kotlinMultiplatform` / `android` publication 分别设置，
@@ -559,3 +559,19 @@ Core16项有效缓存报告、Android120项报告（含新增默认Failure为空
 Core 和 Android Host 三个测试类共 23 项通过。实际编译的 JVM JAR 公开了 `setId(kotlin.uuid.Uuid)`，
 原有 136 个制品的摘要均匹配。四个私有坐标预留版本 `4.0.8-cpf.3-android.8`。
 上游根工程的 API dump 留待向上游提交时同步，本批门禁使用独立 `cpf-build`。
+
+## D1fg Android 原生前台通知透传
+
+Android 增加两个公开接口。业务 Worker 可实现
+`AndroidNativeForegroundProvider.getAndroidForegroundInfo()` 提供启动前通知。
+Android 工厂传入的 `WorkerContext` 可转换为 `AndroidForegroundWorkerContext`，
+在执行期间调用 `setForeground(androidx.work.ForegroundInfo)`，等待当前 AndroidX Worker
+的原生更新完成。启动前和执行阶段共享同一个业务 Worker 与上下文。
+
+两条原生路径透传应用构建的 `ForegroundInfo`，保留通知 ID、通知渠道、`PendingIntent`、
+实际进度与总量以及 service type。渠道由应用管理。通用 `ForegroundWorker` 继续使用
+既有通知转换与定制路径，同时具备两种启动前入口的 Worker 优先使用原生 provider。
+
+四个私有坐标预留版本 `4.0.8-cpf.3-android.9`。新增接口是 Android ABI 增量，
+编译与五个 Host 类共 87 项测试通过。新增用例在 API 24/30 覆盖启动前透传、执行中等待、
+更新失败传播及渠道边界。实际制品签名、外部消费、设备前台服务与通知投递另行验证。

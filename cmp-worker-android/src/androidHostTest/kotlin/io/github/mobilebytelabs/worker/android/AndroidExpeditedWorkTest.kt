@@ -2,8 +2,16 @@
 
 package io.github.mobilebytelabs.worker.android
 
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.os.Build
 import androidx.concurrent.futures.CallbackToFutureAdapter
+import androidx.core.app.NotificationCompat
 import androidx.test.core.app.ApplicationProvider
 import androidx.work.Configuration
 import androidx.work.ForegroundUpdater
@@ -48,6 +56,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import androidx.work.ForegroundInfo as AndroidForegroundInfo
@@ -80,6 +89,66 @@ class AndroidExpeditedWorkTest {
                 assertFalse(fixture.updater.future.isCancelled)
                 fixture.assertUnregistered()
             }
+        }
+    }
+
+    @Test
+    fun nativeProvider_passesRawNotificationAndSharesDelegateWithBusiness() = nativeTest {
+        withFixture(nativeForeground = true) { fixture ->
+            fixture.enqueueAndStart()
+            fixture.awaitUpdater()
+            fixture.assertRawForegroundInfo()
+            assertEquals(listOf("provider", "updater"), fixture.events.toList())
+            assertFalse(fixture.businessEntered.isCompleted)
+            assertFalse(fixture.updater.future.isDone)
+            fixture.assertUnregistered()
+
+            fixture.updater.complete()
+            fixture.businessEntered.await()
+            assertEquals(listOf("provider", "updater", "complete", "business"), fixture.events.toList())
+            fixture.assertIdentity(providerExpected = true)
+            fixture.businessRelease.complete(Unit)
+            fixture.awaitState(WorkInfo.State.SUCCEEDED)
+            fixture.businessJobEnded.await()
+            fixture.assertUnregistered()
+        }
+    }
+
+    @Test
+    fun nativeRuntimeUpdate_passesRawNotificationAndWaitsBeforeContinuing() = nativeTest {
+        withFixture(policy = null, nativeForeground = true) { fixture ->
+            fixture.businessRelease.complete(Unit)
+            fixture.enqueueAndStart()
+            fixture.awaitUpdater()
+            fixture.assertRawForegroundInfo()
+            fixture.assertIdentity(providerExpected = false)
+            assertEquals(listOf("business", "updater"), fixture.events.toList())
+            assertFalse(fixture.updater.future.isDone)
+            assertFalse(fixture.businessJobEnded.isCompleted)
+            assertSame(fixture.nativeWorker, fixture.registeredWorker())
+
+            fixture.updater.complete()
+            fixture.awaitState(WorkInfo.State.SUCCEEDED)
+            fixture.businessJobEnded.await()
+            assertEquals(listOf("business", "updater", "complete", "foreground"), fixture.events.toList())
+            fixture.assertUnregistered()
+        }
+    }
+
+    @Test
+    fun nativeRuntimeUpdate_propagatesUpdaterFailureBeforeBusinessContinues() = nativeTest {
+        val failure = IllegalArgumentException("native foreground update rejected")
+        withFixture(policy = null, nativeForeground = true) { fixture ->
+            fixture.businessRelease.complete(Unit)
+            fixture.enqueueAndStart()
+            fixture.awaitUpdater()
+            fixture.updater.fail(failure)
+
+            assertOriginalFailure(failure, fixture.errors.receive())
+            fixture.awaitState(WorkInfo.State.FAILED)
+            fixture.businessJobEnded.await()
+            assertEquals(listOf("business", "updater"), fixture.events.toList())
+            fixture.assertUnregistered()
         }
     }
 
@@ -216,9 +285,10 @@ class AndroidExpeditedWorkTest {
         foreground: Boolean = true,
         providerFailure: Throwable? = null,
         businessFailure: Throwable? = null,
+        nativeForeground: Boolean = false,
         block: suspend (NativeFixture) -> Unit,
     ) {
-        val fixture = NativeFixture(policy, foreground, providerFailure, businessFailure)
+        val fixture = NativeFixture(policy, foreground, providerFailure, businessFailure, nativeForeground)
         try {
             block(fixture)
         } finally {
@@ -238,8 +308,11 @@ class AndroidExpeditedWorkTest {
         foreground: Boolean,
         providerFailure: Throwable?,
         private val businessFailure: Throwable?,
+        nativeForeground: Boolean,
     ) {
         private val context: Context = ApplicationProvider.getApplicationContext()
+        private val nativeChannelId = "fixture.native.foreground"
+        private val nativeInfo = if (nativeForeground) buildNativeForegroundInfo() else null
         private val previousFactory = KmpWorkerFactory.instance
         private val created = CompletableDeferred<Unit>()
         private val updaterField = WorkerParameters::class.java.getDeclaredField("mForegroundUpdater")
@@ -271,7 +344,19 @@ class AndroidExpeditedWorkTest {
                 override fun create(workerClass: String, context: WorkerContext): CoroutineWorker {
                     assertEquals("native-expedited-test", workerClass)
                     contexts += context
-                    val worker = if (foreground) {
+                    val initialNativeInfo = nativeInfo
+                    val worker = if (initialNativeInfo != null) {
+                        object : ForegroundWorker(context), AndroidNativeForegroundProvider {
+                            override suspend fun getAndroidForegroundInfo(): AndroidForegroundInfo {
+                                assertSame(delegate, this)
+                                providerContext = this.context
+                                events += "provider"
+                                return initialNativeInfo
+                            }
+
+                            override suspend fun doWork(): WorkResult = runBusiness(this, this.context)
+                        }
+                    } else if (foreground) {
                         object : ForegroundWorker(context) {
                             override suspend fun getForegroundInfo(): ForegroundInfo {
                                 assertSame(delegate, this)
@@ -338,6 +423,60 @@ class AndroidExpeditedWorkTest {
             assertEquals(81, assertNotNull(updater.info).notificationId)
         }
 
+        fun assertRawForegroundInfo() {
+            val actual = assertNotNull(updater.info)
+            assertSame(nativeInfo, actual)
+            assertNotNull(actual.notification.contentIntent)
+            assertNotNull(actual.notification.actions.single().actionIntent)
+            assertEquals(7, actual.notification.extras.getInt(Notification.EXTRA_PROGRESS))
+            assertEquals(23, actual.notification.extras.getInt(Notification.EXTRA_PROGRESS_MAX))
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val manager = assertNotNull(context.getSystemService(NotificationManager::class.java))
+                assertEquals(nativeChannelId, actual.notification.channelId)
+                assertNotNull(manager.getNotificationChannel(nativeChannelId))
+                assertNull(manager.getNotificationChannel(AndroidForegroundBridge.DEFAULT_CHANNEL_ID))
+            }
+            val serviceType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+            } else {
+                0
+            }
+            assertEquals(serviceType, actual.foregroundServiceType)
+        }
+
+        private fun buildNativeForegroundInfo(): AndroidForegroundInfo {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val manager = assertNotNull(context.getSystemService(NotificationManager::class.java))
+                manager.createNotificationChannel(
+                    NotificationChannel(nativeChannelId, "应用前台任务", NotificationManager.IMPORTANCE_LOW),
+                )
+            }
+            val open = PendingIntent.getActivity(
+                context,
+                0,
+                Intent("fixture.OPEN").setPackage(context.packageName),
+                PendingIntent.FLAG_IMMUTABLE,
+            )
+            val cancel = PendingIntent.getBroadcast(
+                context,
+                0,
+                Intent("fixture.CANCEL").setPackage(context.packageName),
+                PendingIntent.FLAG_IMMUTABLE,
+            )
+            val notification = NotificationCompat.Builder(context, nativeChannelId)
+                .setSmallIcon(android.R.drawable.stat_notify_sync)
+                .setContentTitle("应用前台任务")
+                .setContentIntent(open)
+                .addAction(android.R.drawable.ic_menu_close_clear_cancel, "取消", cancel)
+                .setProgress(23, 7, false)
+                .build()
+            return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                AndroidForegroundInfo(81, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+            } else {
+                AndroidForegroundInfo(81, notification)
+            }
+        }
+
         private suspend fun runBusiness(worker: CoroutineWorker, workerContext: WorkerContext): WorkResult {
             assertSame(delegate, worker)
             businessContext = workerContext
@@ -347,6 +486,11 @@ class AndroidExpeditedWorkTest {
             businessEntered.complete(Unit)
             try {
                 businessFailure?.let { throw it }
+                // 普通任务跳过启动前提升，单次 gate 用于执行期间的原生更新。
+                if (policy == null && nativeInfo != null) {
+                    assertIs<AndroidForegroundWorkerContext>(workerContext).setForeground(nativeInfo)
+                    events += "foreground"
+                }
                 businessRelease.await()
                 return WorkResult.success()
             } catch (cancelled: CancellationException) {
