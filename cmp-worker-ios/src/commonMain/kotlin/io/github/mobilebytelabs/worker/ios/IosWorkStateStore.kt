@@ -10,6 +10,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlin.uuid.Uuid
 
 internal class IosWorkStateStore(
@@ -17,17 +19,20 @@ internal class IosWorkStateStore(
     private val scope: CoroutineScope? = null,
 ) {
     private val store = MutableStateFlow<Map<Uuid, StoredWork>>(emptyMap())
+    private val persistenceMutex = Mutex()
 
     // RUNNING → ENQUEUED on restore (worker was interrupted by an app kill mid-execution).
     // Only populates when the store is still empty — prevents clobbering in-flight mutations.
     suspend fun restoreFromPersistence() {
-        val saved = persistence.loadAll()
-        if (saved.isEmpty()) return
-        val restored = saved.associate { info ->
-            val state = if (info.state == WorkInfo.State.RUNNING) WorkInfo.State.ENQUEUED else info.state
-            info.id to StoredWork(info.copy(state = state))
+        persistenceMutex.withLock {
+            val saved = persistence.loadAll()
+            if (saved.isEmpty()) return@withLock
+            val restored = saved.associate { info ->
+                val state = if (info.state == WorkInfo.State.RUNNING) WorkInfo.State.ENQUEUED else info.state
+                info.id to StoredWork(info.copy(state = state))
+            }
+            store.compareAndSet(emptyMap(), restored)
         }
-        store.compareAndSet(emptyMap(), restored)
     }
 
     fun initWork(id: Uuid, tags: Set<String>, uniqueWork: UniqueWork? = null): StoredWork {
@@ -36,7 +41,7 @@ internal class IosWorkStateStore(
             val snapshot = store.value
             snapshot[id]?.let { return it }
             if (store.compareAndSet(snapshot, snapshot + (id to queued))) {
-                persist(queued.info)
+                persist(id)
                 return queued
             }
         }
@@ -49,9 +54,7 @@ internal class IosWorkStateStore(
         tags: Set<String>,
         livePeriodicIds: Set<Uuid> = emptySet(),
     ): UniqueEnqueue {
-        if (policy == ExistingWorkPolicy.APPEND || policy == ExistingWorkPolicy.APPEND_OR_REPLACE) {
-            throw WorkEnqueueException("iOS unique work does not support $policy")
-        }
+        policy.checkIosOneTimePolicy()
         val uniqueWork = UniqueWork(name, WorkKind.ONE_TIME)
         val queued = StoredWork(WorkInfo(id = id, state = WorkInfo.State.ENQUEUED, tags = tags), uniqueWork)
         while (true) {
@@ -77,8 +80,8 @@ internal class IosWorkStateStore(
                 work.info.id to work.copy(info = work.info.asCancelled())
             }
             if (store.compareAndSet(snapshot, snapshot + replaced + (id to queued))) {
-                replaced.values.forEach { persist(it.info) }
-                persist(queued.info)
+                replaced.keys.forEach(::persist)
+                persist(id)
                 return UniqueEnqueue(id, enqueued = true, replacedIds = replaced.keys)
             }
         }
@@ -138,15 +141,19 @@ internal class IosWorkStateStore(
             val work = snapshot[id] ?: return false
             val updated = transform(work.info) ?: return false
             if (store.compareAndSet(snapshot, snapshot + (id to work.copy(info = updated)))) {
-                persist(updated)
+                persist(id)
                 return true
             }
         }
     }
 
-    private fun persist(info: WorkInfo) {
+    private fun persist(id: Uuid) {
         scope?.launch {
-            if (info.isFinished) persistence.delete(info.id) else persistence.save(info)
+            persistenceMutex.withLock {
+                // 排队的旧写入应保存当前状态，不能把已取消的工作写回。
+                val info = store.value[id]?.info ?: return@withLock
+                if (info.isFinished) persistence.delete(id) else persistence.save(info)
+            }
         }
     }
 
@@ -162,4 +169,10 @@ internal class IosWorkStateStore(
     enum class WorkKind { ONE_TIME, PERIODIC }
 
     data class UniqueEnqueue(val id: Uuid, val enqueued: Boolean, val replacedIds: Set<Uuid> = emptySet())
+}
+
+internal fun ExistingWorkPolicy.checkIosOneTimePolicy() {
+    if (this == ExistingWorkPolicy.APPEND || this == ExistingWorkPolicy.APPEND_OR_REPLACE) {
+        throw WorkEnqueueException("iOS unique work does not support $this")
+    }
 }

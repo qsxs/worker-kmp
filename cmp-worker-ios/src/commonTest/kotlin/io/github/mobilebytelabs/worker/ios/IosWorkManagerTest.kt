@@ -17,11 +17,14 @@ import io.github.mobilebytelabs.worker.WorkResult
 import io.github.mobilebytelabs.worker.WorkerContext
 import io.github.mobilebytelabs.worker.oneTimeWorkRequest
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
@@ -35,6 +38,7 @@ import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.milliseconds
@@ -423,6 +427,102 @@ class IosWorkManagerTest {
         val wm = workManager(persistence = persistence)
         eventually { wm.getWorkInfoById(id) != null }
         assertEquals(WorkInfo.State.SUCCEEDED, wm.getWorkInfoById(id)?.state)
+    }
+
+    @Test
+    fun persistence_restoreIsSharedByCommandsAndFirstObservations() = runTest {
+        val loadStarted = CompletableDeferred<Unit>()
+        val releaseLoad = CompletableDeferred<Unit>()
+        val restored = WorkInfo(Uuid.random(), WorkInfo.State.RUNNING, tags = setOf("lookup"))
+        val byId = WorkInfo(Uuid.random(), WorkInfo.State.ENQUEUED)
+        val byTag = WorkInfo(Uuid.random(), WorkInfo.State.ENQUEUED, tags = setOf("to-cancel"))
+        val persistence = object : IosWorkPersistence {
+            override suspend fun loadAll(): List<WorkInfo> {
+                loadStarted.complete(Unit)
+                releaseLoad.await()
+                return listOf(restored, byId, byTag)
+            }
+
+            override suspend fun save(info: WorkInfo) = Unit
+            override suspend fun delete(id: Uuid) = Unit
+        }
+        val wm = workManager(persistence)
+        try {
+            withContext(Dispatchers.Default) { withTimeout(2_000) { loadStarted.await() } }
+            val abandoned = async(start = CoroutineStart.UNDISPATCHED) { wm.getWorkInfoById(restored.id) }
+            val lookup = async(start = CoroutineStart.UNDISPATCHED) { wm.getWorkInfoById(restored.id) }
+            val tagFlow = async(start = CoroutineStart.UNDISPATCHED) { wm.getWorkInfosByTag("lookup").first() }
+            val nameFlow =
+                async(start = CoroutineStart.UNDISPATCHED) { wm.getWorkInfosForUniqueWorkFlow("lookup").first() }
+            val cancelId = async(start = CoroutineStart.UNDISPATCHED) { wm.cancelWorkById(byId.id) }
+            val cancelTag = async(start = CoroutineStart.UNDISPATCHED) { wm.cancelAllWorkByTag("to-cancel") }
+
+            val builder = OneTimeWorkRequestBuilder<SlowIosWorker>(SlowIosWorker::class.simpleName!!)
+                .setInitialDelay(5.minutes)
+            val ordinary = builder.build()
+            val unique = builder.setId(Uuid.random()).build()
+            val periodic = PeriodicWorkRequestBuilder<SlowIosWorker>(
+                SlowIosWorker::class.simpleName!!,
+                repeatInterval = 5.minutes,
+            ).setInitialDelay(5.minutes).build()
+            val enqueue = async(start = CoroutineStart.UNDISPATCHED) { wm.enqueue(ordinary) }
+            val enqueueUnique = async(start = CoroutineStart.UNDISPATCHED) {
+                wm.enqueueUniqueWork("new-unique", ExistingWorkPolicy.KEEP, unique)
+            }
+            val enqueuePeriodic = async(start = CoroutineStart.UNDISPATCHED) {
+                wm.enqueueUniquePeriodicWork("new-periodic", ExistingPeriodicWorkPolicy.REPLACE, periodic)
+            }
+
+            val waiters = listOf(
+                abandoned,
+                lookup,
+                tagFlow,
+                nameFlow,
+                cancelId,
+                cancelTag,
+                enqueue,
+                enqueueUnique,
+                enqueuePeriodic,
+            )
+            assertTrue(waiters.none { it.isCompleted })
+            abandoned.cancelAndJoin()
+            assertFalse(lookup.isCompleted)
+            releaseLoad.complete(Unit)
+
+            val expected = restored.copy(state = WorkInfo.State.ENQUEUED)
+            assertEquals(expected, lookup.await())
+            assertEquals(listOf(expected), tagFlow.await())
+            assertTrue(nameFlow.await().isEmpty())
+            cancelId.await()
+            cancelTag.await()
+            assertEquals(WorkInfo.State.CANCELLED, wm.getWorkInfoById(byId.id)?.state)
+            assertEquals(WorkInfo.State.CANCELLED, wm.getWorkInfoById(byTag.id)?.state)
+            assertEquals(ordinary.id, enqueue.await())
+            assertEquals(unique.id, enqueueUnique.await())
+            assertEquals(periodic.id, enqueuePeriodic.await())
+        } finally {
+            releaseLoad.complete(Unit)
+            wm.shutdown()
+        }
+    }
+
+    @Test
+    fun persistence_restoreFailurePropagatesToCommandsAndObservers() = runTest {
+        val persistence = object : IosWorkPersistence {
+            override suspend fun loadAll(): List<WorkInfo> = error("Could not load iOS work records")
+
+            override suspend fun save(info: WorkInfo) = Unit
+            override suspend fun delete(id: Uuid) = Unit
+        }
+        val wm = workManager(persistence)
+        try {
+            val lookup = assertFailsWith<IllegalStateException> { wm.getWorkInfoById(Uuid.random()) }
+            val observer = assertFailsWith<IllegalStateException> { wm.getWorkInfosByTag("lookup").first() }
+            assertEquals("Could not load iOS work records", lookup.message)
+            assertEquals(lookup.message, observer.message)
+        } finally {
+            wm.shutdown()
+        }
     }
 }
 

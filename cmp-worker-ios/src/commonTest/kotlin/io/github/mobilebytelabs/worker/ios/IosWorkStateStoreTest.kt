@@ -298,4 +298,61 @@ class IosWorkStateStoreTest {
         }
         assertEquals(before, s.snapshot())
     }
+
+    @Test
+    fun persistence_serializesInFlightWritesAndReadsCurrentStateAfterWaiting() = runTest {
+        val first = Uuid.random()
+        val second = Uuid.random()
+        val firstSaveEntered = CompletableDeferred<Unit>()
+        val releaseFirstSave = CompletableDeferred<Unit>()
+        val saves = mutableListOf<WorkInfo>()
+        val deletions = mutableListOf<Uuid>()
+        val persistence = object : IosWorkPersistence {
+            private var records = emptyMap<Uuid, WorkInfo>()
+
+            override suspend fun save(info: WorkInfo) {
+                val previous = records
+                saves += info
+                if (info.id == first && firstSaveEntered.complete(Unit)) {
+                    releaseFirstSave.await()
+                }
+                records = previous + (info.id to info)
+            }
+
+            override suspend fun loadAll(): List<WorkInfo> = records.values.toList()
+
+            override suspend fun delete(id: Uuid) {
+                deletions += id
+                records = records - id
+            }
+        }
+        val s = IosWorkStateStore(persistence, backgroundScope)
+        s.initWork(first, emptySet())
+        testScheduler.runCurrent()
+        assertTrue(firstSaveEntered.isCompleted)
+
+        assertTrue(s.transitionToRunning(first, periodic = false))
+        s.updateProgress(first, WorkProgress(20))
+        assertTrue(s.cancelWork(first))
+        s.initWork(second, setOf("independent"))
+        assertTrue(s.transitionToRunning(second, periodic = false))
+        assertTrue(s.incrementAttempt(second))
+        s.updateProgress(second, WorkProgress(60))
+        testScheduler.runCurrent()
+
+        assertEquals(listOf(first), saves.map { it.id })
+        assertTrue(deletions.isEmpty())
+        assertEquals(WorkInfo.State.CANCELLED, s.getById(first)?.state)
+
+        releaseFirstSave.complete(Unit)
+        testScheduler.runCurrent()
+
+        assertEquals(listOf(WorkInfo.State.ENQUEUED), saves.filter { it.id == first }.map { it.state })
+        assertEquals(setOf(first), deletions.toSet())
+        val latestSecond = assertNotNull(s.getById(second))
+        assertEquals(WorkProgress(60), latestSecond.progress)
+        assertEquals(1, latestSecond.runAttemptCount)
+        assertEquals(setOf(latestSecond), saves.filter { it.id == second }.toSet())
+        assertEquals(listOf(latestSecond), persistence.loadAll())
+    }
 }

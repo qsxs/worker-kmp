@@ -26,8 +26,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -56,9 +59,9 @@ class IosWorkManager internal constructor(
     private val mutex = Mutex()
     private val jobRegistry = mutableMapOf<Uuid, RegisteredWork>()
     private val stateStore = IosWorkStateStore(persistence = persistence, scope = scope)
+    private val restore = scope.async { stateStore.restoreFromPersistence() }
 
     init {
-        scope.launch { stateStore.restoreFromPersistence() }
         if (config.enableBackgroundTasks) {
             registerBgProcessingTask(
                 identifier = config.bgProcessingTaskIdentifier,
@@ -79,6 +82,8 @@ class IosWorkManager internal constructor(
         existingWorkPolicy: ExistingWorkPolicy,
         request: OneTimeWorkRequest,
     ): Uuid {
+        existingWorkPolicy.checkIosOneTimePolicy()
+        restore.await()
         val (id, job, replacedJobs) = mutex.withLock {
             val livePeriodicIds = jobRegistry.filterValues { it.periodic && !it.job.isCompleted }.keys
             val result = stateStore.enqueueUniqueOneTime(
@@ -134,6 +139,7 @@ class IosWorkManager internal constructor(
         replace: Boolean = false,
         execute: suspend CoroutineScope.() -> Unit,
     ): Job? {
+        restore.await()
         val (job, replacedJobs) = mutex.withLock {
             val snapshot = stateStore.snapshot()
             val existing = snapshot[request.id]
@@ -159,14 +165,7 @@ class IosWorkManager internal constructor(
             }
             // 维持周期任务按旧名称标签查询和取消的行为；唯一调度按显式身份匹配。
             val tags = if (uniqueWork == null) request.tags else request.tags + uniqueWork.name
-            val work = stateStore.initWork(request.id, tags, uniqueWork)
-            // 空快照时，恢复可能先于 initWork 写入同一个 ID。
-            if (work.uniqueWork != uniqueWork) {
-                throw WorkEnqueueException("Work ID ${request.id} was restored without this work identity")
-            }
-            if (work.info.state != WorkInfo.State.ENQUEUED) {
-                return@withLock null to previousJobs
-            }
+            stateStore.initWork(request.id, tags, uniqueWork)
             registerJob(request, execute) to previousJobs
         } ?: return null
         replacedJobs.forEach { it.cancel() }
@@ -191,6 +190,7 @@ class IosWorkManager internal constructor(
     }
 
     override suspend fun cancelWorkById(id: Uuid) {
+        restore.await()
         val job = mutex.withLock { markCancelled(id) }
         job?.cancel()
     }
@@ -203,6 +203,7 @@ class IosWorkManager internal constructor(
     }
 
     override suspend fun cancelAllWorkByTag(tag: String) {
+        restore.await()
         stateStore.snapshot().values
             .filter { tag in it.info.tags }
             .forEach { cancelWorkById(it.info.id) }
@@ -229,12 +230,20 @@ class IosWorkManager internal constructor(
         }
     }
 
-    override fun getWorkInfosByTag(tag: String): Flow<List<WorkInfo>> = stateStore.observeByTag(tag)
+    override fun getWorkInfosByTag(tag: String): Flow<List<WorkInfo>> = flow {
+        restore.await()
+        emitAll(stateStore.observeByTag(tag))
+    }
 
-    override fun getWorkInfosForUniqueWorkFlow(uniqueWorkName: String): Flow<List<WorkInfo>> =
-        stateStore.observeByUniqueName(uniqueWorkName)
+    override fun getWorkInfosForUniqueWorkFlow(uniqueWorkName: String): Flow<List<WorkInfo>> = flow {
+        restore.await()
+        emitAll(stateStore.observeByUniqueName(uniqueWorkName))
+    }
 
-    override suspend fun getWorkInfoById(id: Uuid): WorkInfo? = stateStore.getById(id)
+    override suspend fun getWorkInfoById(id: Uuid): WorkInfo? {
+        restore.await()
+        return stateStore.getById(id)
+    }
 
     fun shutdown() {
         scope.coroutineContext[Job]?.cancel()
@@ -331,6 +340,7 @@ class IosWorkManager internal constructor(
     // Runs all ENQUEUED work that has unsatisfied constraints.
     // Called by the BGProcessingTask handler when iOS wakes the app in the background.
     private suspend fun runPendingWork(): Boolean {
+        restore.await()
         val pending = stateStore.snapshot().values
             .filter { it.info.state == WorkInfo.State.ENQUEUED }
         if (pending.isEmpty()) return true
