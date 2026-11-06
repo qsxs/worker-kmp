@@ -36,7 +36,11 @@ internal class IosWorkStateStore(
                 val dueAt = work.nextRunAtEpochMillis ?: 0L.takeIf {
                     info.state == WorkInfo.State.RUNNING && work.request != null
                 }
-                info.id to work.copy(info = info.copy(state = state), nextRunAtEpochMillis = dueAt)
+                info.id to work.copy(
+                    info = info.copy(state = state),
+                    nextRunAtEpochMillis = dueAt,
+                    persistenceMode = PersistenceMode.AUTOMATIC,
+                )
             }
             store.compareAndSet(emptyMap(), restored)
         }
@@ -48,6 +52,7 @@ internal class IosWorkStateStore(
         uniqueWork: UniqueWork? = null,
         request: WorkRequest? = null,
         nextRunAtEpochMillis: Long? = null,
+        persistenceMode: PersistenceMode = PersistenceMode.AUTOMATIC,
     ): StoredWork {
         val initialDue = nextRunAtEpochMillis.takeIf { request != null }
         val queued = StoredWork(
@@ -55,6 +60,7 @@ internal class IosWorkStateStore(
             uniqueWork,
             request,
             initialDue,
+            persistenceMode,
         )
         while (true) {
             val snapshot = store.value
@@ -256,6 +262,8 @@ internal class IosWorkStateStore(
     }
 
     private fun persist(id: Uuid) {
+        // 本次持有者负责登记、重试和最终结算，不能再派生脱离其异常链的写任务。
+        if (store.value[id]?.persistenceMode == PersistenceMode.OWNED) return
         scope?.launch { persistCurrent(id) }
     }
 
@@ -287,6 +295,7 @@ internal class IosWorkStateStore(
         val uniqueWork: UniqueWork? = null,
         val request: WorkRequest? = null,
         val nextRunAtEpochMillis: Long? = null,
+        val persistenceMode: PersistenceMode = PersistenceMode.AUTOMATIC,
     ) {
         fun requireMatchingRequest(incoming: WorkRequest) {
             val saved = request ?: return
@@ -297,6 +306,9 @@ internal class IosWorkStateStore(
     }
 
     data class UniqueWork(val name: String, val kind: WorkKind)
+
+    /** 仅影响当前进程的写入所有权，不写入持久化格式。 */
+    enum class PersistenceMode { AUTOMATIC, OWNED }
 
     enum class WorkKind { ONE_TIME, PERIODIC }
 

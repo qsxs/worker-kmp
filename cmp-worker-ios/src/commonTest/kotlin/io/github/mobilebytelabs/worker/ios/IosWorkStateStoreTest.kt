@@ -1,10 +1,14 @@
 package io.github.mobilebytelabs.worker.ios
 
+import io.github.mobilebytelabs.worker.CoroutineWorker
 import io.github.mobilebytelabs.worker.ExistingWorkPolicy
+import io.github.mobilebytelabs.worker.OneTimeWorkRequestBuilder
 import io.github.mobilebytelabs.worker.WorkData
 import io.github.mobilebytelabs.worker.WorkEnqueueException
 import io.github.mobilebytelabs.worker.WorkInfo
 import io.github.mobilebytelabs.worker.WorkProgress
+import io.github.mobilebytelabs.worker.ios.IosWorkStateStore.PersistenceMode
+import io.github.mobilebytelabs.worker.ios.IosWorkStateStore.StoredWork
 import io.github.mobilebytelabs.worker.ios.IosWorkStateStore.UniqueWork
 import io.github.mobilebytelabs.worker.ios.IosWorkStateStore.WorkKind
 import kotlinx.coroutines.CompletableDeferred
@@ -33,6 +37,105 @@ class IosWorkStateStoreTest {
         s.initWork(id, emptySet())
         val info = s.getById(id)
         assertEquals(WorkInfo.State.ENQUEUED, info?.state)
+    }
+
+    @Test
+    fun initWork_defaultStillSchedulesPersistenceOnTheExistingScope() = runTest {
+        val persistence = InMemoryIosWorkPersistence()
+        val s = IosWorkStateStore(persistence, backgroundScope)
+        val id = Uuid.random()
+        s.initWork(id, emptySet())
+        assertTrue(persistence.loadAll().isEmpty())
+        testScheduler.runCurrent()
+        assertEquals(listOf(s.getById(id)), persistence.loadAll())
+    }
+
+    @Test
+    fun initWork_ownedRegistrationLeavesPersistenceAndItsFailureToTheAwaitingCaller() = runTest {
+        var saves = 0
+        val persistence = object : IosWorkPersistence {
+            override suspend fun save(info: WorkInfo) {
+                saves++
+                error("Owned registration save failed")
+            }
+
+            override suspend fun loadAll(): List<WorkInfo> = emptyList()
+            override suspend fun delete(id: Uuid) = Unit
+        }
+        val s = IosWorkStateStore(persistence, backgroundScope)
+        val id = Uuid.random()
+        s.initWork(id, emptySet(), persistenceMode = PersistenceMode.OWNED)
+        testScheduler.runCurrent()
+        assertEquals(0, saves)
+        val failure = assertFailsWith<IllegalStateException> { s.persistCurrent(id) }
+        assertEquals("Owned registration save failed", failure.message)
+        assertEquals(1, saves)
+    }
+
+    @Test
+    fun ownedModeSuppressesEveryAutomaticMutationButRetainsExplicitRetryAndFinalWrites() = runTest {
+        var saves = 0
+        var deletes = 0
+        val persistence = object : IosWorkPersistence {
+            override suspend fun save(info: WorkInfo) {
+                saves++
+            }
+
+            override suspend fun loadAll(): List<WorkInfo> = emptyList()
+
+            override suspend fun delete(id: Uuid) {
+                deletes++
+            }
+        }
+        val s = IosWorkStateStore(persistence, backgroundScope)
+        val request = OneTimeWorkRequestBuilder<CoroutineWorker>("OwnedWorker").build()
+        val id = request.id
+        s.initWork(id, emptySet(), request = request, persistenceMode = PersistenceMode.OWNED)
+        s.prepareRestoredDeadlines(100)
+        s.refreshEnqueuedWork(id)
+        assertTrue(s.transitionToRunning(id, periodic = false))
+        assertTrue(s.incrementAttempt(id))
+        s.updateProgress(id, WorkProgress(50))
+        assertTrue(s.requeueInterrupted(id, 100))
+        assertTrue(s.transitionToRunning(id, periodic = false))
+        testScheduler.runCurrent()
+        assertEquals(0, saves)
+        assertEquals(0, deletes)
+
+        assertTrue(s.scheduleRetry(id, 200))
+        assertEquals(1, saves)
+        assertTrue(s.finishWork(id, succeeded = true, WorkData.EMPTY))
+        assertTrue(s.cancelWork(id, periodic = true))
+        testScheduler.runCurrent()
+        assertEquals(1, saves)
+        assertEquals(0, deletes)
+        assertEquals(PersistenceMode.OWNED, s.snapshot()[id]?.persistenceMode)
+        s.persistCurrent(id)
+        assertEquals(1, deletes)
+    }
+
+    @Test
+    fun restoreResetsOwnedModeEvenWhenPersistenceReturnsTheOriginalRecordObject() = runTest {
+        val id = Uuid.random()
+        val original = StoredWork(WorkInfo(id, WorkInfo.State.RUNNING), persistenceMode = PersistenceMode.OWNED)
+        var saves = 0
+        val persistence = object : IosWorkPersistence {
+            override suspend fun save(info: WorkInfo) {
+                saves++
+            }
+
+            override suspend fun loadAll(): List<WorkInfo> = listOf(original.info)
+            override suspend fun loadRecords(): List<StoredWork> = listOf(original)
+            override suspend fun delete(id: Uuid) = Unit
+        }
+        val s = IosWorkStateStore(persistence, backgroundScope)
+        s.restoreFromPersistence()
+        assertEquals(PersistenceMode.AUTOMATIC, s.snapshot()[id]?.persistenceMode)
+        assertEquals(WorkInfo.State.ENQUEUED, s.getById(id)?.state)
+        assertEquals(PersistenceMode.OWNED, original.persistenceMode)
+        assertTrue(s.transitionToRunning(id, periodic = false))
+        testScheduler.runCurrent()
+        assertEquals(1, saves)
     }
 
     @Test

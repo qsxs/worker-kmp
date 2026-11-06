@@ -89,6 +89,24 @@ class IosWorkManager internal constructor(
         return request.id
     }
 
+    /**
+     * 登记全新的一次性请求，并等待本次执行及其子协程、清理全部结束。
+     * 已存在的 ID 一律拒绝；调用方取消只取消本次实际 Job，并在清理结束后抛出取消。
+     * 管理器关闭或外部取消本次请求时，同样等待真实协程清理结束。
+     */
+    suspend fun enqueueAndAwaitCompletion(request: OneTimeWorkRequest): WorkInfo {
+        restore.await()
+        return IosOwnedWorkExecution(
+            scope,
+            stateStore,
+            mutex,
+            jobRegistry,
+            persistence::validateRequest,
+            ::nowEpochMillis,
+            ::schedulePendingWork,
+        ).enqueueAndAwait(request) { executeOneTime(request) }
+    }
+
     override suspend fun enqueueUniqueWork(
         uniqueWorkName: String,
         existingWorkPolicy: ExistingWorkPolicy,
@@ -336,7 +354,7 @@ class IosWorkManager internal constructor(
         )
         try {
             val worker = try {
-                workerFactory.create(request.workerClass, context)
+                createActiveIosWorker { workerFactory.create(request.workerClass, context) }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {

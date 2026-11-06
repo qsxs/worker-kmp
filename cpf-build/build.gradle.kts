@@ -101,11 +101,13 @@ tasks.named<KotlinCompileTool>("compileTestKotlinJvm") {
         iosSources.file("commonMain/$iosSourcePackage/IosWorkTiming.kt"),
         iosSources.file("commonMain/$iosSourcePackage/IosPendingWorkRunner.kt"),
         iosSources.file("commonMain/$iosSourcePackage/BgTaskExecution.kt"),
+        iosSources.file("commonMain/$iosSourcePackage/IosOwnedWorkExecution.kt"),
         iosSources.file("commonTest/$iosSourcePackage/InMemoryIosWorkPersistence.kt"),
         iosSources.file("commonTest/$iosSourcePackage/IosWorkStateStoreTest.kt"),
         iosSources.file("commonTest/$iosSourcePackage/IosWorkRecordCodecTest.kt"),
         iosSources.file("commonTest/$iosSourcePackage/IosPendingWorkRunnerTest.kt"),
         iosSources.file("commonTest/$iosSourcePackage/BgTaskExecutionTest.kt"),
+        iosSources.file("commonTest/$iosSourcePackage/IosOwnedWorkExecutionTest.kt"),
     )
 }
 

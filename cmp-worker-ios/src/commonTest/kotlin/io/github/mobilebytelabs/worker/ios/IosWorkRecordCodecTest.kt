@@ -16,6 +16,7 @@ import io.github.mobilebytelabs.worker.WorkEnqueueException
 import io.github.mobilebytelabs.worker.WorkInfo
 import io.github.mobilebytelabs.worker.WorkProgress
 import io.github.mobilebytelabs.worker.WorkRequest
+import io.github.mobilebytelabs.worker.ios.IosWorkStateStore.PersistenceMode
 import io.github.mobilebytelabs.worker.ios.IosWorkStateStore.StoredWork
 import io.github.mobilebytelabs.worker.ios.IosWorkStateStore.UniqueWork
 import io.github.mobilebytelabs.worker.ios.IosWorkStateStore.WorkKind
@@ -42,6 +43,23 @@ import kotlin.uuid.Uuid
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class IosWorkRecordCodecTest {
+    @Test
+    fun persistenceOwnershipIsRuntimeOnlyAndDecodesAsAutomatic() {
+        val request = OneTimeWorkRequestBuilder<CoroutineWorker>("OwnedWorker").build()
+        val owned = StoredWork(
+            WorkInfo(request.id, WorkInfo.State.RUNNING),
+            request = request,
+            nextRunAtEpochMillis = 100,
+            persistenceMode = PersistenceMode.OWNED,
+        )
+        val encoded = IosWorkRecordCodec.encode(owned)
+        assertEquals(IosWorkRecordCodec.encode(owned.copy(persistenceMode = PersistenceMode.AUTOMATIC)), encoded)
+        val restored = assertNotNull(IosWorkRecordCodec.decode(encoded))
+        assertEquals(PersistenceMode.AUTOMATIC, restored.persistenceMode)
+        assertEquals(owned.info, restored.info)
+        assertEquals(owned.nextRunAtEpochMillis, restored.nextRunAtEpochMillis)
+    }
+
     @Test
     fun oneTimeRequestRestoresFullPayloadAndExecutionMetadata() {
         val retry = RetryConfig(7, 15.seconds, 2.minutes, BackoffPolicy.LINEAR, 3.5)
