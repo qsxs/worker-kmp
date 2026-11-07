@@ -42,7 +42,7 @@ class IosWorkCompletionIntegrationTest {
             val output = WorkData("completed" to true)
             val manager = IosWorkManager(
                 workerFactory = factory {
-                    if (succeeded) WorkResult.success(output) else WorkResult.failure("Expected failure")
+                    if (succeeded) WorkResult.success(output) else WorkResult.Failure("Expected failure", output)
                 },
                 config = disabledConfig(),
             )
@@ -51,7 +51,7 @@ class IosWorkCompletionIntegrationTest {
                 val info = real { manager.enqueueAndAwaitCompletion(request) }
                 assertEquals(if (succeeded) WorkInfo.State.SUCCEEDED else WorkInfo.State.FAILED, info.state)
                 assertEquals(1, info.runAttemptCount)
-                assertEquals(if (succeeded) output else WorkData.EMPTY, info.outputData)
+                assertEquals(output, info.outputData)
                 assertFailsWith<WorkEnqueueException> { real { manager.enqueueAndAwaitCompletion(request) } }
                 assertEquals(info, real { manager.getWorkInfoById(request.id) })
             } finally {

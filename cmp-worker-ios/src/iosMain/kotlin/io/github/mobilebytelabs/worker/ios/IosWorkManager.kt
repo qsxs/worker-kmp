@@ -346,11 +346,18 @@ class IosWorkManager internal constructor(
         kotlin.coroutines.coroutineContext.ensureActive()
         if (!stateStore.transitionToRunning(request.id, periodic = request is PeriodicWorkRequest)) return false
 
+        // context 和同步工厂都观察同一个真实执行游标；周期新轮重新从 0 开始。
+        var attempt = if (request is PeriodicWorkRequest) {
+            0
+        } else {
+            (stateStore.getById(request.id)?.runAttemptCount ?: 0).coerceAtLeast(0)
+        }
         val context = IosWorkerContext(
             id = request.id,
             inputData = request.inputData,
             tags = request.tags,
             stateStore = stateStore,
+            runAttemptCountProvider = { attempt },
         )
         try {
             val worker = try {
@@ -364,11 +371,6 @@ class IosWorkManager internal constructor(
                     }
                 }
                 return false
-            }
-            var attempt = if (request is PeriodicWorkRequest) {
-                0
-            } else {
-                (stateStore.getById(request.id)?.runAttemptCount ?: 0).coerceAtLeast(0)
             }
             if (attempt >= request.retryConfig.maxAttempts) {
                 stateStore.finishWork(request.id, succeeded = false, outputData = WorkData.EMPTY)
@@ -396,9 +398,14 @@ class IosWorkManager internal constructor(
                 }
             } while (true)
 
-            if (request is PeriodicWorkRequest && result is WorkResult.Success) {
+            val outputToValidate = when (val completedResult = result) {
+                is WorkResult.Success -> completedResult.outputData
+                is WorkResult.Failure -> completedResult.outputData
+                is WorkResult.Retry -> null
+            }
+            if (request is PeriodicWorkRequest && outputToValidate != null) {
                 try {
-                    persistence.validateData(result.outputData)
+                    persistence.validateData(outputToValidate)
                 } catch (failure: IllegalArgumentException) {
                     result = WorkResult.Failure(failure.message ?: "Invalid iOS work output")
                 }
@@ -410,7 +417,11 @@ class IosWorkManager internal constructor(
             val completed = stateStore.finishWork(
                 request.id,
                 succeeded = result is WorkResult.Success,
-                outputData = (result as? WorkResult.Success)?.outputData ?: WorkData.EMPTY,
+                outputData = when (val completedResult = result) {
+                    is WorkResult.Success -> completedResult.outputData
+                    is WorkResult.Failure -> completedResult.outputData
+                    is WorkResult.Retry -> WorkData.EMPTY
+                },
                 nextRunAtEpochMillis = nextRunAt,
             )
             if (background) stateStore.persistCurrent(request.id)
