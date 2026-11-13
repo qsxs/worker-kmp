@@ -7,7 +7,16 @@ pluginManagement {
     }
 }
 
-val workerVersion = providers.gradleProperty("workerOhosVersion").get()
+val cpfProperties =
+    java.util.Properties().apply {
+        file("../../cpf-build/gradle.properties").inputStream().use { load(it) }
+    }
+val workerVersion =
+    providers
+        .gradleProperty("workerOhosVersion")
+        .orElse(providers.gradleProperty("cpf.version"))
+        .orElse(cpfProperties.getProperty("cpf.version"))
+        .get()
 val workerRepository = providers.gradleProperty("workerOhosRepository").get()
 
 dependencyResolutionManagement {

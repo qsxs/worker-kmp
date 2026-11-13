@@ -3,6 +3,7 @@ import org.gradle.api.publish.maven.tasks.PublishToMavenLocal
 import org.gradle.api.publish.maven.tasks.PublishToMavenRepository
 import java.nio.file.FileAlreadyExistsException
 import java.nio.file.Files
+import java.util.Properties
 
 plugins {
     kotlin("multiplatform") version "2.4.21-0.1.0-13"
@@ -10,8 +11,17 @@ plugins {
 }
 
 val cpfKotlinVersion = "2.4.21-0.1.0-13"
-val publicationGroup = "com.lihb.forks.worker"
-val publicationVersion = "4.0.8-cpf.3-ohos.3"
+// 独立工具链也从同一文件读取坐标，禁止为 OHOS 维护另一套发布版本。
+val cpfProperties =
+    Properties().apply {
+        layout.projectDirectory
+            .file("../cpf-build/gradle.properties")
+            .asFile
+            .inputStream()
+            .use(::load)
+    }
+val publicationGroup = cpfProperties.getProperty("cpf.group")
+val publicationVersion = providers.gradleProperty("cpf.version").orElse(cpfProperties.getProperty("cpf.version")).get()
 val publicationArtifacts =
     mapOf(
         "kotlinMultiplatform" to "worker-kmp",

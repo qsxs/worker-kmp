@@ -6,6 +6,8 @@ pluginManagement {
     }
 }
 
+val workerRepository = providers.gradleProperty("workerAndroidRepository").orElse("../build/repository")
+
 dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
@@ -14,7 +16,7 @@ dependencyResolutionManagement {
             forRepository {
                 maven {
                     name = "Cpf"
-                    url = uri("../build/repository")
+                    url = uri(workerRepository.get())
                 }
             }
             filter {

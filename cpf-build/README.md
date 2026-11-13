@@ -1,6 +1,8 @@
 # CPF core / Android / 可选 iOS 独立构建入口
 
-当前 iOS 发布入口生成 `4.0.8-cpf.3-ios.1`，使用本 fork 的 core 与 iOS 后端源码。
+当前 Android / iOS 发布入口共用本目录 `gradle.properties` 的 `cpf.version`，OHOS 同样读取此文件。
+完整 11 模块的三平台候选由 [`../cpf-release`](../cpf-release/README.md) 组合，版本只在此处维护；下文历史发布记录中的旧版本保持原始含义。
+当前 iOS 入口使用本 fork 的 core 与 iOS 后端源码。
 它与应用现有源码 wrapper 一致，排除 `WorkerKmpMainViewController.kt` 示例启动器，
 不引入 Compose/Koin。两个发布根为 `worker-kmp` 和 `worker-ios`，均提供
 `iosarm64` 与 `iossimulatorarm64` 叶子。core 另发布 JVM 叶子以保持其元数据完整。
@@ -14,7 +16,6 @@
 python3 cpf-build/verify-ios-publication.py cpf-build/build/repository --output cpf-build/build/ios-publication.json
 ./gradlew -p cpf-build/consumer-ios \
   "-PworkerIosRepository=file://$PWD/cpf-build/build/repository" \
-  -PworkerIosVersion=4.0.8-cpf.3-ios.1 \
   verifyWorkerIosVariants linkDebugFrameworkIosArm64 linkDebugFrameworkIosSimulatorArm64 --console=plain
 ```
 
@@ -105,10 +106,10 @@ Android KMP library、Compose Multiplatform、Compose compiler 插件，不使�
 
 坐标由本目录 `gradle.properties` 的 `cpf.group`、`cpf.version` 提供，默认值为：
 
-- core KMP 根坐标：`com.lihb.forks.worker:worker-kmp:4.0.8-cpf.3-android.9`。
-- core JVM 坐标：`com.lihb.forks.worker:worker-kmp-jvm:4.0.8-cpf.3-android.9`。
-- Android KMP 根坐标：`com.lihb.forks.worker:worker-android:4.0.8-cpf.3-android.9`。
-- Android 目标叶坐标：`com.lihb.forks.worker:worker-android-android:4.0.8-cpf.3-android.9`。
+- core KMP 根坐标：`com.lihb.forks.worker:worker-kmp:<cpf.version>`。
+- core JVM 坐标：`com.lihb.forks.worker:worker-kmp-jvm:<cpf.version>`。
+- Android KMP 根坐标：`com.lihb.forks.worker:worker-android:<cpf.version>`。
+- Android 目标叶坐标：`com.lihb.forks.worker:worker-android-android:<cpf.version>`。
 - 文件仓库：`cpf-build/build/repository`，发布仓库名称为 `Cpf`。
 
 Android 坐标按 KMP 的 `kotlinMultiplatform` / `android` publication 分别设置，

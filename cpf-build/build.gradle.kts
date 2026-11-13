@@ -16,8 +16,8 @@ group = providers.gradleProperty("cpf.group").get()
 
 val enableIos = providers.gradleProperty("cpf.enableIos").orNull == "true"
 
-// iOS 预览使用独立版本，不能覆盖已验收的默认 JVM / Android 产物。
-version = if (enableIos) "4.0.8-cpf.3-ios.1" else providers.gradleProperty("cpf.version").get()
+// Android、iOS 与 OHOS 共用 cpf-build/gradle.properties 中的发布版本。
+version = providers.gradleProperty("cpf.version").get()
 
 require(group.toString() != "io.github.mobilebytelabs") {
     "CPF publications must use a private group."

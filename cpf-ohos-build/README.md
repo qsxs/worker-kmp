@@ -1,5 +1,7 @@
 # worker-kmp 鸿蒙后端
 
+发布 group/version 统一从 `../cpf-build/gradle.properties` 读取，不再维护 OHOS 专属版本。完整三平台 11 模块候选的组合与回执见 [`../cpf-release`](../cpf-release/README.md)。
+
 此独立入口使用 Gradle 8.11.1、JDK 17 或 21、CPF Kotlin `2.4.21-0.1.0-13` 和 HarmonyOS API 26 SDK。两个 Native 目标共用 `cmp-worker-kmp/src/ohosMain`，Android/iOS 的构建入口仍在 `cpf-build`。
 
 鸿蒙沿用 CPF coroutines `1.11.0-0.1.0-07`、datetime `0.8.0-0.1.0-07` 和 Kermit `2.0.8-1.1.0`。Kermit 从 CPF `maven-inner` 解析；Okio `3.17.0-0.1.0-07` 和 GitHub Pages Maven 上的 SQLite `2.7.1-chunjizhang-cpf11-p2r1` 是 OHOS 实现依赖。Native 和元数据解析的 stdlib 对齐到 CPF Kotlin `.13`。
@@ -19,10 +21,10 @@ $NativeProperty = "-Pkotlin.native.home=$CpfNativeHome"
 & $Gradle811 -p "$ForkRoot\cpf-ohos-build" $NativeProperty compileCommonMainKotlinMetadata compileKotlinOhosX64 compileKotlinOhosArm64 --console=plain
 & $Gradle811 -p "$ForkRoot\cpf-ohos-build" $NativeProperty publishAllPublicationsToCpfRepository --console=plain
 $Repo = "$ForkRoot\cpf-ohos-build\build\repository"
-& $Gradle811 -p "$ForkRoot\cpf-ohos-build\consumer" $NativeProperty "-PworkerOhosRepository=$Repo" "-PworkerOhosVersion=4.0.8-cpf.3-ohos.3" verifyWorkerVariants linkDebugSharedOhosX64 linkDebugSharedOhosArm64 --console=plain
+& $Gradle811 -p "$ForkRoot\cpf-ohos-build\consumer" $NativeProperty "-PworkerOhosRepository=$Repo" verifyWorkerVariants linkDebugSharedOhosX64 linkDebugSharedOhosArm64 --console=plain
 ```
 
-本地 Maven 仓库默认位于 `cpf-ohos-build/build/repository`。请通过 `publishAllPublicationsToCpfRepository` 一次产出 `com.lihb.forks.worker:worker-kmp:4.0.8-cpf.3-ohos.3` 和同版 `worker-kmp-ohosx64`、`worker-kmp-ohosarm64`。独立消费工程也接受 HTTPS Maven 根；正式分发沿用 GitHub Pages 匿名 Maven。
+本地 Maven 仓库默认位于 `cpf-ohos-build/build/repository`。请通过 `publishAllPublicationsToCpfRepository` 一次产出 `com.lihb.forks.worker:worker-kmp:<cpf.version>` 和同版 `worker-kmp-ohosx64`、`worker-kmp-ohosarm64`。独立消费工程也接受 HTTPS Maven 根；正式分发沿用 GitHub Pages 匿名 Maven。
 
 发布前会检查三个候选目录，并原子创建当前版本的仓库占位文件。占位文件在每次尝试后保留。失败时可通过 `-Pcpf.ohos.repository=<独立本地目录>` 在新的空仓库重试。独立消费工程应使用同一次完整发布生成的一个文件仓库，声明根坐标并通过 Gradle Module Metadata 选择对应 Native 叶子，再分别编译和链接。
 

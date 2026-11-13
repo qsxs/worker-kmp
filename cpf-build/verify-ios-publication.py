@@ -11,7 +11,6 @@ import xml.etree.ElementTree as ET
 import zipfile
 
 GROUP = "com.lihb.forks.worker"
-VERSION = "4.0.8-cpf.3-ios.1"
 MODULES = {
     "worker-kmp": "jar",
     "worker-kmp-jvm": "jar",
@@ -35,6 +34,14 @@ def sha(path, algorithm="sha256"):
 
 def json_file(path):
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def default_version():
+    properties = Path(__file__).resolve().parent / "gradle.properties"
+    for line in properties.read_text(encoding="utf-8").splitlines():
+        if line.startswith("cpf.version="):
+            return line.partition("=")[2].strip()
+    raise ValueError(f"Missing cpf.version in {properties}")
 
 
 def check_sources(archive, source_root, source_sets, excluded=()):
@@ -61,7 +68,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("repository", type=Path)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--version", default=default_version())
     args = parser.parse_args()
+    VERSION = args.version
     root = args.repository.resolve()
     fork = Path(__file__).resolve().parents[1]
     files = sorted(path for path in root.rglob("*") if path.is_file())

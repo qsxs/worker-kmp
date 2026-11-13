@@ -1,11 +1,29 @@
 import org.gradle.api.artifacts.component.ModuleComponentIdentifier
+import java.util.Properties
 
 plugins {
     kotlin("multiplatform") version "2.4.21-0.1.0-13"
 }
 
-val workerVersion = providers.gradleProperty("workerOhosVersion").get()
+val cpfProperties =
+    Properties().apply {
+        file("../../cpf-build/gradle.properties").inputStream().use { load(it) }
+    }
+val workerVersion =
+    providers
+        .gradleProperty("workerOhosVersion")
+        .orElse(providers.gradleProperty("cpf.version"))
+        .orElse(cpfProperties.getProperty("cpf.version"))
+        .get()
 val nativeVersion = "2.4.21-0.1.0-13"
+val nativeDependencyVersions =
+    mapOf(
+        "org.jetbrains.kotlin:kotlin-stdlib" to nativeVersion,
+        "org.jetbrains.kotlinx:kotlinx-coroutines-core" to "1.11.0-0.1.0-07",
+        "org.jetbrains.kotlinx:kotlinx-datetime" to "0.8.0-0.1.0-07",
+        "co.touchlab:kermit" to "2.0.8-1.1.0",
+        "co.touchlab:kermit-core" to "2.0.8-1.1.0",
+    )
 
 kotlin {
     listOf(ohosX64(), ohosArm64()).forEach { target ->
@@ -29,8 +47,11 @@ configurations.configureEach {
             name == "allSourceSetsCompileDependenciesMetadata" || name == "metadataCompileClasspath"
     if (nativeOrMetadata) {
         resolutionStrategy.eachDependency {
-            if (requested.group == "org.jetbrains.kotlin" && requested.name == "kotlin-stdlib") {
-                useVersion(nativeVersion)
+            // Native 与元数据使用 OHOS 基础制品，JVM 构建工具的依赖图保持原样。
+            val suffix = listOf("-ohosx64", "-ohosarm64").firstOrNull { requested.name.endsWith(it) }.orEmpty()
+            val key = "${requested.group}:${requested.name.removeSuffix(suffix)}"
+            nativeDependencyVersions[key]?.let { version ->
+                useVersion(version)
             }
         }
     }

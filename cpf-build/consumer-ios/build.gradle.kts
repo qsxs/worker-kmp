@@ -1,12 +1,22 @@
 import org.gradle.api.artifacts.component.ModuleComponentIdentifier
 import java.security.MessageDigest
 import java.util.HexFormat
+import java.util.Properties
 
 plugins {
     kotlin("multiplatform") version "2.4.20"
 }
 
-val workerVersion = providers.gradleProperty("workerIosVersion").get()
+val cpfProperties =
+    Properties().apply {
+        file("../gradle.properties").inputStream().use { load(it) }
+    }
+val workerVersion =
+    providers
+        .gradleProperty("workerIosVersion")
+        .orElse(providers.gradleProperty("cpf.version"))
+        .orElse(cpfProperties.getProperty("cpf.version"))
+        .get()
 
 kotlin {
     listOf(iosArm64(), iosSimulatorArm64()).forEach { target ->

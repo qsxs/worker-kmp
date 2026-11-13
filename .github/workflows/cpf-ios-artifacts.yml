@@ -8,6 +8,7 @@ on:
     paths:
       - .github/workflows/cpf-ios-artifacts.yml
       - cpf-build/build.gradle.kts
+      - cpf-build/gradle.properties
       - cpf-build/settings.gradle.kts
       - cpf-build/ios/**
       - cpf-build/consumer-ios/**
@@ -51,7 +52,6 @@ jobs:
         run: |
           ./gradlew -p cpf-build/consumer-ios \
             "-PworkerIosRepository=file://$GITHUB_WORKSPACE/cpf-build/build/repository" \
-            -PworkerIosVersion=4.0.8-cpf.3-ios.1 \
             verifyWorkerIosVariants linkDebugFrameworkIosArm64 linkDebugFrameworkIosSimulatorArm64 --console=plain
 
       - name: 归档制品与构建回执
