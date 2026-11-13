@@ -1,4 +1,6 @@
 import org.gradle.api.artifacts.component.ModuleComponentIdentifier
+import java.security.MessageDigest
+import java.util.HexFormat
 
 plugins {
     kotlin("multiplatform") version "2.4.20"
@@ -48,15 +50,8 @@ tasks.register("verifyWorkerIosVariants") {
                 check(workerModules.all { it.version == workerVersion }) { "Mixed Worker KMP versions" }
                 writer.appendLine(configurationName)
                 artifacts.forEach { artifact ->
-                    val digest =
-                        java.security.MessageDigest
-                            .getInstance(
-                                "SHA-256",
-                            ).digest(artifact.file.readBytes())
-                    val sha256 =
-                        java.util.HexFormat
-                            .of()
-                            .formatHex(digest)
+                    val digest = MessageDigest.getInstance("SHA-256").digest(artifact.file.readBytes())
+                    val sha256 = HexFormat.of().formatHex(digest)
                     writer.appendLine("${artifact.id.componentIdentifier}\t$sha256\t${artifact.file.name}")
                 }
                 println("$configurationName -> ${workerModules.joinToString()}")
