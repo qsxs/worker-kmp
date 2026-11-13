@@ -46,7 +46,8 @@ def check_sources(archive, source_root, source_sets, excluded=()):
                 if path.name in excluded:
                     continue
                 relative = path.relative_to(source_root / source_set / "kotlin").as_posix()
-                candidates = [name for name in names if name == relative or name.endswith("/" + relative)]
+                member = source_set + "/" + relative
+                candidates = [name for name in names if name == member or name.endswith("/" + member)]
                 require(len(candidates) == 1, f"Missing or duplicated source member: {relative}")
                 require(package.read(candidates[0]) == path.read_bytes(), f"Source bytes differ: {relative}")
                 count += 1
