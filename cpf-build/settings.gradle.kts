@@ -19,11 +19,11 @@ dependencyResolutionManagement {
     }
 }
 
-// 默认只包含 core 与 Android；iOS 必须显式启用，不引入上游根工程或 build-logic。
+// 每个平台单独生产，iOS 入口不配置 Android 工具链。
 rootProject.name = "worker-kmp"
-
-include(":android")
 
 if (providers.gradleProperty("cpf.enableIos").orNull == "true") {
     include(":ios")
+} else {
+    include(":android")
 }

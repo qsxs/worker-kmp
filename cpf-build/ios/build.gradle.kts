@@ -1,11 +1,10 @@
 import org.gradle.api.publish.maven.MavenPublication
 import org.gradle.api.publish.maven.tasks.PublishToMavenLocal
+import org.gradle.api.tasks.bundling.Jar
 import org.jetbrains.kotlin.gradle.ExperimentalKotlinGradlePluginApi
 
 plugins {
     alias(libs.plugins.kotlin.multiplatform)
-    alias(libs.plugins.compose.multiplatform)
-    alias(libs.plugins.kotlin.compose)
     `maven-publish`
 }
 
@@ -23,44 +22,41 @@ kotlin {
         }
     }
 
-    // 本模块只有 iOS 目标，合并物理目录，避免相同目标集合的重复中间源集。
-    applyHierarchyTemplate {
-        common { withIos() }
-    }
+    applyDefaultHierarchyTemplate()
     compilerOptions {
         optIn.add("kotlin.uuid.ExperimentalUuidApi")
     }
 
     sourceSets {
         commonMain {
-            kotlin.setSrcDirs(
-                listOf(upstreamSources.dir("commonMain/kotlin"), upstreamSources.dir("iosMain/kotlin")),
-            )
-            resources.setSrcDirs(
-                listOf(upstreamSources.dir("commonMain/resources"), upstreamSources.dir("iosMain/resources")),
-            )
+            kotlin.setSrcDirs(listOf(upstreamSources.dir("commonMain/kotlin")))
+            resources.setSrcDirs(listOf(upstreamSources.dir("commonMain/resources")))
             dependencies {
                 api(project(":"))
                 implementation(libs.kotlinx.coroutines.core)
+                implementation(libs.kotlinx.datetime)
                 implementation(libs.kotlinx.serialization.json)
-                // 启动器的公开签名包含 Composable 与 Koin Module。
-                api(compose.runtime)
-                api(compose.ui)
-                api(libs.koin.core)
+                implementation(libs.kermit)
             }
         }
+        named("iosMain") {
+            kotlin.setSrcDirs(listOf(upstreamSources.dir("iosMain/kotlin")))
+            resources.setSrcDirs(listOf(upstreamSources.dir("iosMain/resources")))
+            // 与应用现有 wrapper 相同，调度制品排除独立的 Compose/Koin 示例入口。
+            kotlin.exclude("**/WorkerKmpMainViewController.kt")
+        }
         commonTest {
-            kotlin.setSrcDirs(
-                listOf(upstreamSources.dir("commonTest/kotlin"), upstreamSources.dir("iosTest/kotlin")),
-            )
-            resources.setSrcDirs(
-                listOf(upstreamSources.dir("commonTest/resources"), upstreamSources.dir("iosTest/resources")),
-            )
+            kotlin.setSrcDirs(listOf(upstreamSources.dir("commonTest/kotlin")))
+            resources.setSrcDirs(listOf(upstreamSources.dir("commonTest/resources")))
+            kotlin.exclude("**/WorkerKmpMainViewControllerTest.kt")
             dependencies {
                 implementation(libs.kotlin.test)
                 implementation(libs.kotlinx.coroutines.test)
-                implementation(libs.koin.test)
             }
+        }
+        named("iosTest") {
+            kotlin.setSrcDirs(listOf(upstreamSources.dir("iosTest/kotlin")))
+            resources.setSrcDirs(listOf(upstreamSources.dir("iosTest/resources")))
         }
     }
 }
@@ -76,8 +72,8 @@ publishing {
             }
         pom {
             name.set("worker-ios (CPF iOS fork)")
-            description.set("Private iOS platform fork of worker-kmp with complete upstream launcher")
-            url.set("https://github.com/MobileByteLabs/worker-kmp")
+            description.set("Worker KMP iOS scheduling backend")
+            url.set("https://github.com/qsxs/worker-kmp")
             inceptionYear.set("2026")
             licenses {
                 license {
@@ -115,6 +111,10 @@ publishing {
 
 tasks.withType<PublishToMavenLocal>().configureEach {
     enabled = false
+}
+
+tasks.withType<Jar>().matching { it.name.contains("sources", ignoreCase = true) }.configureEach {
+    from(rootProject.layout.projectDirectory.file("../LICENSE"))
 }
 
 val repositoryDirectory =

@@ -1,0 +1,68 @@
+name: CPF iOS artifacts
+run-name: CPF iOS artifacts · ${{ github.sha }}
+
+on:
+  push:
+    branches:
+      - codex/cpf-work-manager
+    paths:
+      - .github/workflows/cpf-ios-artifacts.yml
+      - cpf-build/build.gradle.kts
+      - cpf-build/settings.gradle.kts
+      - cpf-build/ios/**
+      - cpf-build/consumer-ios/**
+      - cpf-build/verify-ios-publication.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: github.repository == 'qsxs/worker-kmp'
+    runs-on: macos-26
+    timeout-minutes: 60
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - name: 检出 fork
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: 配置 JDK 21
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: 构建 iOS Maven 制品
+        run: |
+          xcodebuild -version
+          ./gradlew -p cpf-build -Pcpf.enableIos=true \
+            compileCommonMainKotlinMetadata compileKotlinIosArm64 compileKotlinIosSimulatorArm64 \
+            publishKotlinMultiplatformPublicationToCpfRepository \
+            :ios:publishKotlinMultiplatformPublicationToCpfRepository --console=plain
+
+      - name: 核对发布文件
+        run: python3 cpf-build/verify-ios-publication.py cpf-build/build/repository --output cpf-build/build/ios-publication.json
+
+      - name: 独立制品链接
+        run: |
+          ./gradlew -p cpf-build/consumer-ios \
+            "-PworkerIosRepository=file://$GITHUB_WORKSPACE/cpf-build/build/repository" \
+            -PworkerIosVersion=4.0.8-cpf.3-ios.1 \
+            verifyWorkerIosVariants linkDebugFrameworkIosArm64 linkDebugFrameworkIosSimulatorArm64 --console=plain
+
+      - name: 归档制品与构建回执
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: worker-ios-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            cpf-build/build/repository/
+            cpf-build/build/ios-publication.json
+            cpf-build/consumer-ios/build/worker-ios-variants.txt
+            cpf-build/consumer-ios/build/bin/

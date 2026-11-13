@@ -1,6 +1,7 @@
 import org.gradle.api.publish.maven.MavenPublication
 import org.gradle.api.publish.maven.tasks.PublishToMavenLocal
 import org.gradle.api.publish.maven.tasks.PublishToMavenRepository
+import org.gradle.api.tasks.bundling.Jar
 import org.gradle.api.tasks.compile.JavaCompile
 import org.jetbrains.kotlin.gradle.ExperimentalKotlinGradlePluginApi
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
@@ -16,7 +17,7 @@ group = providers.gradleProperty("cpf.group").get()
 val enableIos = providers.gradleProperty("cpf.enableIos").orNull == "true"
 
 // iOS 预览使用独立版本，不能覆盖已验收的默认 JVM / Android 产物。
-version = if (enableIos) "4.0.8-cpf.3-ios-preview.1" else providers.gradleProperty("cpf.version").get()
+version = if (enableIos) "4.0.8-cpf.3-ios.1" else providers.gradleProperty("cpf.version").get()
 
 require(group.toString() != "io.github.mobilebytelabs") {
     "CPF publications must use a private group."
@@ -175,6 +176,10 @@ tasks.withType<PublishToMavenLocal>().configureEach {
 }
 
 if (enableIos) {
+    tasks.withType<Jar>().matching { it.name.contains("sources", ignoreCase = true) }.configureEach {
+        from(layout.projectDirectory.file("../LICENSE"))
+    }
+
     val verifyIosPublicationHost =
         tasks.register("verifyCpfIosPublicationHost") {
             group = "publishing"

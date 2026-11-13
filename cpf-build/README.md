@@ -1,5 +1,23 @@
 # CPF core / Android / 可选 iOS 独立构建入口
 
+当前 iOS 发布入口生成 `4.0.8-cpf.3-ios.1`，使用本 fork 的 core 与 iOS 后端源码。
+它与应用现有源码 wrapper 一致，排除 `WorkerKmpMainViewController.kt` 示例启动器，
+不引入 Compose/Koin。两个发布根为 `worker-kmp` 和 `worker-ios`，均提供
+`iosarm64` 与 `iossimulatorarm64` 叶子。core 另发布 JVM 叶子以保持其元数据完整。
+运行 `cpf-ios-artifacts.yml` 可在 GitHub macOS runner 构建并归档 Maven 仓库和独立链接结果。
+仓库内保留的 A3b preview 说明是早期构建记录，当前命令使用此处的版本。
+
+```shell
+./gradlew -p cpf-build -Pcpf.enableIos=true \
+  publishKotlinMultiplatformPublicationToCpfRepository \
+  :ios:publishKotlinMultiplatformPublicationToCpfRepository --console=plain
+python3 cpf-build/verify-ios-publication.py cpf-build/build/repository --output cpf-build/build/ios-publication.json
+./gradlew -p cpf-build/consumer-ios \
+  "-PworkerIosRepository=file://$PWD/cpf-build/build/repository" \
+  -PworkerIosVersion=4.0.8-cpf.3-ios.1 \
+  verifyWorkerIosVariants linkDebugFrameworkIosArm64 linkDebugFrameworkIosSimulatorArm64 --console=plain
+```
+
 此目录是 worker-kmp 本地 fork 的独立 Gradle 工程，以 `-p cpf-build` 选择。
 默认根项目挂接 core 的 JVM 与 common 源集，`:android` 挂接完整 Android 模块；
 不包含上游根工程的 composite build、样例、Store5 或 KSP，也不向应用增加依赖。
