@@ -114,7 +114,7 @@ def main():
                 require(f"native_targets={target}" in manifest, f"Wrong KLIB target: {module}")
         if module.startswith("worker-ios"):
             for variant in metadata["variants"]:
-                if "sources" in variant["name"].lower():
+                if "sources" in variant["name"].lower() or "available-at" in variant:
                     continue
                 deps = variant.get("dependencies", ())
                 require(any(d["group"] == GROUP and d["version"].get("requires") == VERSION for d in deps), "Backend lacks same-version core dependency")
