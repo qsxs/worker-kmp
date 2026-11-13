@@ -125,7 +125,12 @@ def main():
         "worker-kmp": check_sources(
             base / "worker-kmp" / VERSION / f"worker-kmp-{VERSION}-sources.jar",
             fork / "cmp-worker-kmp/src",
-            ("commonMain", "jvmMain", "iosMain"),
+            ("commonMain", "iosMain"),
+        ),
+        "worker-kmp-jvm": check_sources(
+            base / "worker-kmp-jvm" / VERSION / f"worker-kmp-jvm-{VERSION}-sources.jar",
+            fork / "cmp-worker-kmp/src",
+            ("commonMain", "jvmMain"),
         ),
         "worker-ios": check_sources(
             base / "worker-ios" / VERSION / f"worker-ios-{VERSION}-sources.jar",
