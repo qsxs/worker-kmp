@@ -5,13 +5,13 @@ import java.nio.file.FileAlreadyExistsException
 import java.nio.file.Files
 
 plugins {
-    kotlin("multiplatform") version "2.4.20-0.1.0-11"
+    kotlin("multiplatform") version "2.4.21-0.1.0-13"
     `maven-publish`
 }
 
-val cpfKotlinVersion = "2.4.20-0.1.0-11"
+val cpfKotlinVersion = "2.4.21-0.1.0-13"
 val publicationGroup = "com.lihb.forks.worker"
-val publicationVersion = "4.0.8-cpf.3-ohos.2"
+val publicationVersion = "4.0.8-cpf.3-ohos.3"
 val publicationArtifacts =
     mapOf(
         "kotlinMultiplatform" to "worker-kmp",
@@ -51,6 +51,10 @@ kotlin {
         val ohosMain by creating {
             dependsOn(commonMain)
             kotlin.setSrcDirs(listOf(upstreamSources.dir("ohosMain/kotlin")))
+            dependencies {
+                implementation("androidx.sqlite:sqlite-bundled:2.7.1-chunjizhang-cpf11-p2r1")
+                implementation("com.squareup.okio:okio:3.17.0-0.1.0-07")
+            }
         }
         getByName("ohosX64Main").dependsOn(ohosMain)
         getByName("ohosArm64Main").dependsOn(ohosMain)
@@ -78,9 +82,9 @@ publishing {
     publications.withType<MavenPublication>().configureEach {
         artifactId = publicationArtifacts.getValue(name)
         pom {
-            name.set("worker-kmp (CPF OHOS core fork)")
-            description.set("Private OHOS core build of worker-kmp for x64 and arm64")
-            url.set("https://github.com/MobileByteLabs/worker-kmp")
+            name.set("worker-kmp (CPF OHOS fork)")
+            description.set("Worker KMP with the OHOS WorkScheduler backend for x64 and arm64")
+            url.set("https://github.com/qsxs/worker-kmp")
             licenses {
                 license {
                     name.set("The Apache License, Version 2.0")
